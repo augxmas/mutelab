@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     private static final int R_REPORT_OMITTED=35;
     private static final int R_OTHER_NAME=36,R_OTHER_DONG=37,R_OTHER_HO=38,R_FREQUENCY=39;
     private final Set<String> analyzingRecordings = new HashSet<>();
+    private static final Set<String> reportTransitions = new HashSet<>();
     private final Map<String, List<Runnable>> recordingUploads = new HashMap<>();
     private static final ExecutorService RECORDING_UPLOAD_EXECUTOR = Executors.newSingleThreadExecutor();
     private LinearLayout root, body;
@@ -113,6 +114,7 @@ public class MainActivity extends Activity {
     private void card(LinearLayout parent,View inner){LinearLayout box=column();GradientDrawable surface=new GradientDrawable();surface.setColor(CARD);surface.setCornerRadius(dp(18));surface.setStroke(dp(1),BORDER);box.setBackground(surface);pad(box,16,15,16,15);box.addView(inner);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(10);parent.addView(box,lp);}
     private void styleSurface(View view,int color,int radius,int stroke){GradientDrawable shape=new GradientDrawable();shape.setColor(color);shape.setCornerRadius(dp(radius));if(stroke!=Color.TRANSPARENT)shape.setStroke(dp(1),stroke);view.setBackground(shape);}
     private Button button(String label,boolean primary,Runnable action){return button(label,null,primary,action);}private Button button(String icon,String label,boolean primary,Runnable action){Button b=new Button(this);b.setText((icon==null?"":icon+"  ")+(label==null?"":label));b.setAllCaps(false);b.setTextSize(14);b.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));b.setTextColor(primary?Color.WHITE:INK);styleSurface(b,primary?BLUE:BUTTON_ALT,14,primary?Color.TRANSPARENT:BUTTON_BORDER);b.setMinHeight(dp(48));b.setPadding(dp(14),dp(9),dp(14),dp(9));b.setElevation(0);b.setOnClickListener(v->action.run());return b;}
+    private void setActionEnabled(Button button,boolean enabled,String disabledReason){button.setEnabled(enabled);button.setAlpha(enabled?1f:.42f);if(!enabled&&!disabledReason.isEmpty())button.setContentDescription(button.getText()+" · "+disabledReason);}
     private TextView pill(String label){TextView v=text(label,12,BLUE,true);v.setGravity(Gravity.CENTER);v.setPadding(dp(12),dp(6),dp(12),dp(6));GradientDrawable g=new GradientDrawable();g.setColor(SAGE);g.setCornerRadius(dp(14));g.setStroke(dp(1),BORDER);v.setBackground(g);return v;}private LinearLayout soundBars(){LinearLayout l=row();int[] h={dp(10),dp(22),dp(15)};int[] c={BLUE,PEACH,Color.rgb(198,211,200)};for(int i=0;i<3;i++){View bar=new View(this);GradientDrawable d=new GradientDrawable();d.setColor(c[i]);d.setCornerRadius(dp(5));bar.setBackground(d);l.addView(bar,new LinearLayout.LayoutParams(dp(7),h[i]));}return l;}private interface ModalAction{boolean run();}
     private TextView modalAction(String label,boolean primary,boolean danger){String value=label==null?"":label;String ico=null;if(value.indexOf("닫기")>=0||value.indexOf("삭제")>=0)ico="✕";else if(value.indexOf("취소")>=0||value.indexOf("돌아가기")>=0)ico="↩";else if(value.indexOf("저장")>=0||value.indexOf("확인")>=0)ico="✓";TextView b=text((ico==null?"":ico+"  ")+value,14,primary?Color.WHITE:INK,true);b.setGravity(Gravity.CENTER);b.setMinWidth(dp(84));b.setMinHeight(dp(46));b.setPadding(dp(16),dp(10),dp(16),dp(10));GradientDrawable bg=new GradientDrawable();bg.setColor(primary?(danger?Color.rgb(168,76,67):BLUE):BUTTON_ALT);bg.setCornerRadius(dp(14));if(!primary)bg.setStroke(dp(1),BUTTON_BORDER);b.setBackground(bg);b.setClickable(true);b.setFocusable(true);return b;}
     private Dialog showCustomDialog(String heading,View content,String positive,String secondary,boolean danger,ModalAction onPositive,ModalAction onSecondary){
@@ -783,6 +785,8 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     recordingUploads.remove(id);
+                    if ("홈".equals(page) || "기록".equals(page) || "소음기록".equals(page)
+                            || ("분석".equals(page) && id.equals(analysisId))) render();
                     showMessageDialog("원본 등록 실패", error.getMessage() == null
                             ? "서버 연결과 로그인 상태를 확인해 주세요." : error.getMessage(), false);
                 });
@@ -794,19 +798,58 @@ public class MainActivity extends Activity {
     private void beginIncidentReport(String id) {
         String[] record = readRecording(id);
         if (record.length < ROW_MIN) return;
+        if (!hasCompletedIncidentJournal(record)) {
+            showMessageDialog("발생 일지를 먼저 작성해 주세요", "소음 유형과 피해 상황을 저장한 뒤에만 층간소음으로 보고할 수 있습니다.", false);
+            return;
+        }
         if (getPreferences(0).getString("auth_token", "").isEmpty()) {
             page = "계정";
             render();
             showMessageDialog("로그인이 필요합니다", "층간소음 발생 일지로 저장하려면 로그인해 주세요.", false);
             return;
         }
+        if (recordingUploads.containsKey(id)) {
+            showMessageDialog("원본 등록 중", "녹음 원본 등록이 끝난 뒤 다시 보고해 주세요.", false);
+            return;
+        }
+        if (record[R_RECORD_NO].isEmpty()) {
+            registerRecording(record, () -> beginIncidentReport(id));
+            render();
+            return;
+        }
         record[R_REPORT_STATE] = "pending";
+        record[R_REPORT_OMITTED] = "";
         getPreferences(0).edit().putString("record_" + id, packRecord(record)).apply();
-        if (record[R_RECORD_NO].isEmpty()) registerRecording(record, () -> editRecord(id));
-        else editRecord(id);
+        render();
+        saveIncidentJournal(record);
     }
     private JSONObject incidentJournal(String[] d){JSONObject journal=new JSONObject();try{journal.put("recordNo",d[R_RECORD_NO]);journal.put("startedAt",date(Long.parseLong(d[2])));journal.put("endedAt",date(Long.parseLong(d[3])));journal.put("kind",d[4]);journal.put("place",d[5]);journal.put("impact",d[6]);journal.put("withinNoiseScope","1".equals(d[7]));journal.put("tag",d[R_TAG]);journal.put("memberName",getPreferences(0).getString("profile_name",""));journal.put("address",getPreferences(0).getString("profile_address",""));}catch(Exception ignored){}return journal;}
-    private void saveIncidentJournal(String[] d){apiRequest("PUT","/recordings/"+d[R_RECORD_NO]+"/journal",json("journal",incidentJournal(d)),true,(data,error)->{if(error!=null){showMessageDialog("발생 일지 저장 실패",error,false);return;}if("pending".equals(d[R_REPORT_STATE]))verifyAndCreateReport(d);else if(isIncludedInReport(d))submitCommitteeIncident(d,d[R_AUDIO_HASH],(submitted,submitError)->{if(submitError!=null)showMessageDialog("위원회 반영 실패",submitError,false);else{markCommitteeSubmissionSynced(d);showMessageDialog("저장 완료","발생 일지와 위원회 제출 내용을 갱신했습니다.",true);}});else showMessageDialog("저장 완료","녹음 원본과 연결된 발생 일지를 서버에 암호화해 저장했습니다.",true);});}
+    private void saveIncidentJournal(String[] record){
+        boolean updatingActiveReport=isIncludedInReport(record);
+        if(updatingActiveReport)reportTransitions.add(record[0]);
+        apiRequest("PUT","/recordings/"+record[R_RECORD_NO]+"/journal",json("journal",incidentJournal(record)),true,(data,error)->{
+            if(error!=null){
+                if(updatingActiveReport)releaseReportTransition(record[0]);
+                if("pending".equals(record[R_REPORT_STATE]))clearPendingReportState(record[0]);
+                showMessageDialog("발생 일지 저장 실패",error,false);
+                return;
+            }
+            if("pending".equals(record[R_REPORT_STATE])){
+                verifyAndCreateReport(record);
+                return;
+            }
+            if(isIncludedInReport(record)){
+                submitCommitteeIncident(record,record[R_AUDIO_HASH],(submitted,submitError)->{
+                    if(submitError!=null){releaseReportTransition(record[0]);showMessageDialog("위원회 반영 실패",submitError,false);return;}
+                    markCommitteeSubmissionSynced(record);
+                    releaseReportTransition(record[0]);
+                    showMessageDialog("저장 완료","발생 일지 수정 내용을 층간소음보고와 위원회 제출 자료에 자동으로 반영했습니다.",true);
+                });
+                return;
+            }
+            showMessageDialog("저장 완료","녹음 원본과 연결된 발생 일지를 서버에 암호화해 저장했습니다.",true);
+        });
+    }
     private JSONObject committeeDetails(String[] record){JSONObject details=new JSONObject();try{details.put("minDb",record[R_LOW_DB]);details.put("maxDb",record[R_PEAK_DB]);details.put("latitude",record[R_LAT]);details.put("longitude",record[R_LON]);details.put("ip",record[R_IP]);details.put("otherName",record[R_OTHER_NAME]);details.put("otherDong",record[R_OTHER_DONG]);details.put("otherHo",record[R_OTHER_HO]);details.put("frequency",record[R_FREQUENCY]);}catch(Exception ignored){}return details;}
     private void submitCommitteeIncident(String[] record,String clientSha256,ApiCallback callback){
         if(record==null||record.length<ROW_MIN){callback.onResult(null,"제출할 발생일지 정보를 확인할 수 없습니다.");return;}
@@ -866,6 +909,7 @@ public class MainActivity extends Activity {
         try {
             audio = new FileInputStream(current[1]);
         } catch (java.io.IOException error) {
+            clearPendingReportState(id);
             showMessageDialog("원본 검증 실패", "원본 녹음 파일을 열 수 없습니다.", false);
             return;
         }
@@ -879,21 +923,23 @@ public class MainActivity extends Activity {
                 StringBuilder hex = new StringBuilder();
                 for (byte value : digest.digest()) hex.append(String.format(Locale.US, "%02X", value));
                 runOnUiThread(() -> apiRequest("POST", "/recordings/" + number + "/verify", json("sha256", hex.toString()), true, (result,error) -> {
-                    if (error != null) { showMessageDialog("원본 검증 실패", error, false); return; }
+                    if (error != null) { clearPendingReportState(id);showMessageDialog("원본 검증 실패", error, false); return; }
                     if (!result.optBoolean("verified",false)) {
                         JSONObject notice=result.optJSONObject("notification");
                         String delivery=notice!=null&&notice.optBoolean("emailSent",false)?"앱 알림과 이메일로 안내했습니다.":"앱 알림을 등록했으며 이메일 발송 상태를 확인 중입니다.";
                         notificationsChecked=false;
+                        clearPendingReportState(id);
                         showMessageDialog("원본이 변경됨", "등록된 음원 원본과 일치하지 않아 보고서로 이관하지 않았습니다. "+delivery, false);
                         return;
                     }
                     String[] latest = readRecording(id);
-                    if (latest.length < ROW_MIN || !number.equals(latest[R_RECORD_NO])) return;
+                    if (latest.length < ROW_MIN || !number.equals(latest[R_RECORD_NO])) {clearPendingReportState(id);return;}
                     submitCommitteeIncident(latest,hex.toString(),(submitted,submitError)->{
-                        if(submitError!=null){showMessageDialog("위원회 제출 실패",submitError,false);return;}
+                        if(submitError!=null){clearPendingReportState(id);showMessageDialog("위원회 제출 실패",submitError,false);return;}
                         latest[R_REPORT_STATE] = "reported";
                         latest[R_REPORT_OMITTED] = "";
                         getPreferences(0).edit().putString("record_" + id, packRecord(latest)).apply();
+                        reportTransitions.remove(id);
                         markCommitteeSubmissionSynced(latest);
                         page = "층간소음보고서";
                         render();
@@ -901,12 +947,26 @@ public class MainActivity extends Activity {
                     });
                 }));
             } catch (Exception error) {
-                runOnUiThread(() -> showMessageDialog("원본 검증 실패", "음원 해시를 계산하지 못했습니다.", false));
+                runOnUiThread(() -> {clearPendingReportState(id);showMessageDialog("원본 검증 실패", "음원 해시를 계산하지 못했습니다.", false);});
             }
         }).start();
     }
     private static boolean isIncludedInReport(String[] record) {
         return "reported".equals(record[R_REPORT_STATE]) && !"1".equals(record[R_REPORT_OMITTED]);
+    }
+    private static boolean isReportPending(String[] record){return record!=null&&record.length>R_REPORT_STATE&&"pending".equals(record[R_REPORT_STATE]);}
+    private static boolean hasCompletedIncidentJournal(String[] record){return record!=null&&record.length>6&&record[4]!=null&&!record[4].trim().isEmpty()&&record[6]!=null&&!record[6].trim().isEmpty();}
+    private boolean isReportBusy(String[] record){return record!=null&&record.length>0&&(isReportPending(record)||reportTransitions.contains(record[0])||recordingUploads.containsKey(record[0]));}
+    private void releaseReportTransition(String id){reportTransitions.remove(id);if("기록".equals(page)||"소음기록".equals(page)||"층간소음보고서".equals(page))render();}
+    private void clearPendingReportState(String id){
+        String[] current=readRecording(id);
+        if(current.length<ROW_MIN||!isReportPending(current))return;
+        current[R_REPORT_STATE]="";
+        current[R_REPORT_OMITTED]="";
+        getPreferences(0).edit().putString("record_"+id,packRecord(current)).apply();
+        reportTransitions.remove(id);
+        clearCommitteeSubmissionSynced(current);
+        if("기록".equals(page)||"소음기록".equals(page)||"층간소음보고서".equals(page))render();
     }
 
     private String committeeSubmissionKey(String[] record){return COMMITTEE_SYNC_PREFIX+record[R_RECORD_NO];}
@@ -930,7 +990,18 @@ public class MainActivity extends Activity {
     private void markCommitteeSubmissionAccountBlocked(String[] record){String login=getPreferences(0).getString("auth_login_id","");if(!login.isEmpty())getPreferences(0).edit().putString(committeeSubmissionBlockKey(record),login).apply();}
     private void clearCommitteeSubmissionAccountBlocked(String[] record){getPreferences(0).edit().remove(committeeSubmissionBlockKey(record)).apply();}
 
+    private void resumePendingIncidentReports(){
+        if(getPreferences(0).getString("auth_token","").isEmpty())return;
+        for(String[] record:records()){
+            if(!isReportPending(record)||reportTransitions.contains(record[0]))continue;
+            if(!hasCompletedIncidentJournal(record)){clearPendingReportState(record[0]);continue;}
+            if(record[R_RECORD_NO].isEmpty()){clearPendingReportState(record[0]);beginIncidentReport(record[0]);continue;}
+            reportTransitions.add(record[0]);
+            saveIncidentJournal(record);
+        }
+    }
     private void syncReportedCommitteeSubmissions(){
+        resumePendingIncidentReports();
         if(committeeReportSyncRunning||getPreferences(0).getString("auth_token","").isEmpty())return;
         authenticationExpiryHandled=false;
         ArrayList<String[]> pending=new ArrayList<>();
@@ -967,15 +1038,39 @@ public class MainActivity extends Activity {
     private void setReportOmitted(String id, boolean omitted) {
         String[] record = readRecording(id);
         if (record.length < ROW_MIN || !"reported".equals(record[R_REPORT_STATE])) return;
-        if(omitted)apiRequest("DELETE","/recordings/"+record[R_RECORD_NO]+"/committee-submission",null,true,(data,error)->{if(error!=null){showMessageDialog("제출 철회 실패",error,false);return;}finishReportOmitted(record,true);});
-        else submitCommitteeIncident(record,record[R_AUDIO_HASH],(data,error)->{if(error!=null){showMessageDialog("다시 제출하지 못했습니다",error,false);return;}finishReportOmitted(record,false);});
+        if(reportTransitions.contains(id))return;
+        reportTransitions.add(id);
+        if(!omitted){
+            record[R_REPORT_OMITTED]="";
+            getPreferences(0).edit().putString("record_"+id,packRecord(record)).apply();
+        }
+        render();
+        if(omitted){
+            apiRequest("DELETE","/recordings/"+record[R_RECORD_NO]+"/committee-submission",null,true,(data,error)->{
+                if(error!=null){reportTransitions.remove(id);render();showMessageDialog("제출 철회 실패",error,false);return;}
+                finishReportOmitted(record,true);
+            });
+        }else{
+            submitCommitteeIncident(record,record[R_AUDIO_HASH],(data,error)->{
+                if(error!=null){record[R_REPORT_OMITTED]="1";getPreferences(0).edit().putString("record_"+id,packRecord(record)).apply();reportTransitions.remove(id);render();showMessageDialog("다시 제출하지 못했습니다",error,false);return;}
+                finishReportOmitted(record,false);
+            });
+        }
     }
-    private void finishReportOmitted(String[] record,boolean omitted){record[R_REPORT_OMITTED]=omitted?"1":"";getPreferences(0).edit().putString("record_"+record[0],packRecord(record)).apply();if(omitted)clearCommitteeSubmissionSynced(record);else markCommitteeSubmissionSynced(record);render();Toast.makeText(this,omitted?"위원회 제출을 철회했습니다.":"위원회에 다시 제출했습니다.",Toast.LENGTH_SHORT).show();}
+    private void finishReportOmitted(String[] record,boolean omitted){reportTransitions.remove(record[0]);record[R_REPORT_OMITTED]=omitted?"1":"";getPreferences(0).edit().putString("record_"+record[0],packRecord(record)).apply();if(omitted)clearCommitteeSubmissionSynced(record);else markCommitteeSubmissionSynced(record);render();Toast.makeText(this,omitted?"위원회 제출을 철회했습니다.":"위원회에 다시 제출했습니다.",Toast.LENGTH_SHORT).show();}
 
     private void toggleIncidentReport(String id) {
         String[] record = readRecording(id);
         if (record.length < ROW_MIN) return;
+        if (isReportBusy(record)) {
+            showMessageDialog("보고 처리 중", "원본 검증과 위원회 제출이 끝난 뒤 다시 확인해 주세요.", false);
+            return;
+        }
         if ("reported".equals(record[R_REPORT_STATE])) {
+            if(!isIncludedInReport(record)&&!hasCompletedIncidentJournal(record)){
+                showMessageDialog("발생 일지를 먼저 작성해 주세요", "소음 유형과 피해 상황을 저장한 뒤에만 다시 보고할 수 있습니다.", false);
+                return;
+            }
             setReportOmitted(id, isIncludedInReport(record));
         } else {
             beginIncidentReport(id);
@@ -1017,7 +1112,9 @@ public class MainActivity extends Activity {
                 if (!entry[5].isEmpty()) report.addView(text("발생 추정 장소 · " + entry[5], 13, MUTED, false));
                 if (!entry[6].isEmpty()) report.addView(text("피해 상황 · " + entry[6], 13, MUTED, false));
                 gap(report, 6);
-                report.addView(button("보고서에서 생략", false, () -> setReportOmitted(entry[0], true)));
+                Button omitAction=button("보고서에서 생략", false, () -> setReportOmitted(entry[0], true));
+                setActionEnabled(omitAction,!isReportBusy(entry),"보고 상태 변경 중");
+                report.addView(omitAction);
             }
             gap(report, 14);
             report.addView(button("▤", "통합 보고서 PDF 내보내기", true, this::exportIncidentReport));
@@ -1290,7 +1387,49 @@ public class MainActivity extends Activity {
         }
         card(body,panel);gap(body,4);body.addView(button("✎","소음 발생 일지 작성",true,()->editRecord(analysisId)));gap(body,4);body.addView(button("↩","기록 목록으로",false,()->{page="기록";render();}));
     }
-    private void showLogs(){title("내 소음 기록","음원은 서버에 원본 해시와 함께 등록하고, 발생 일지는 해당 측정 건과 연결합니다.");ArrayList<String[]> list=records();if(list.isEmpty()){LinearLayout empty=column();empty.setGravity(Gravity.CENTER);empty.addView(text("아직 저장된 기록이 없어요",16,INK,true));gap(empty,8);empty.addView(text("소음이 발생하면 우하단 Record 버튼을 눌러 보세요.",13,MUTED,false));card(body,empty);return;}for(String[] d:list){LinearLayout c=column();c.addView(text(date(Long.parseLong(d[2])),16,INK,true));gap(c,5);c.addView(text(d[R_RECORD_NO].isEmpty()?new File(d[1]).getName():"소음측정 일련번호 · "+d[R_RECORD_NO],11,d[R_RECORD_NO].isEmpty()?MUTED:BLUE,true));String envL=envSummary(d);if(!envL.isEmpty()){gap(c,3);c.addView(text("녹음 환경 · "+envL,11,MUTED,false));}if(!d[4].isEmpty()){gap(c,6);c.addView(text("종류: "+d[4]+(d[5].isEmpty()?"":" · 장소: "+d[5]),13,INK,false));}if(!d[6].isEmpty()){gap(c,5);c.addView(text(d[6],13,MUTED,false));}gap(c,10);LinearLayout actions=row();actions.addView(button("▶","재생",false,()->play(d[0])),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("☰","분석 결과",false,()->openAnalysis(d)),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("✎","일지 작성",false,()->editRecord(d[0])),new LinearLayout.LayoutParams(0,-2,1));c.addView(actions);gap(c,4);LinearLayout more=row();more.addView(button("⚑",isIncludedInReport(d)?"층간소음보고에서 생략":"층간소음으로 보고",!isIncludedInReport(d),()->toggleIncidentReport(d[0])),new LinearLayout.LayoutParams(0,-2,2));more.addView(button("✕","삭제",false,()->deleteRecord(d)),new LinearLayout.LayoutParams(0,-2,1));c.addView(more);card(body,c);}}
+    private void showLogs(){
+        title("내 소음 기록","음원은 서버에 원본 해시와 함께 등록하고, 발생 일지는 해당 측정 건과 연결합니다.");
+        ArrayList<String[]> list=records();
+        if(list.isEmpty()){
+            LinearLayout empty=column();empty.setGravity(Gravity.CENTER);empty.addView(text("아직 저장된 기록이 없어요",16,INK,true));gap(empty,8);empty.addView(text("소음이 발생하면 우하단 Record 버튼을 눌러 보세요.",13,MUTED,false));card(body,empty);return;
+        }
+        for(String[] d:list){
+            boolean journalComplete=hasCompletedIncidentJournal(d);
+            boolean included=isIncludedInReport(d);
+            boolean omitted="reported".equals(d[R_REPORT_STATE])&&"1".equals(d[R_REPORT_OMITTED]);
+            boolean busy=isReportBusy(d);
+            boolean journalLocked=isReportPending(d)||reportTransitions.contains(d[0]);
+            LinearLayout c=column();
+            c.addView(text(date(Long.parseLong(d[2])),16,INK,true));gap(c,5);
+            c.addView(text(d[R_RECORD_NO].isEmpty()?new File(d[1]).getName():"소음측정 일련번호 · "+d[R_RECORD_NO],11,d[R_RECORD_NO].isEmpty()?MUTED:BLUE,true));
+            String envL=envSummary(d);if(!envL.isEmpty()){gap(c,3);c.addView(text("녹음 환경 · "+envL,11,MUTED,false));}
+            if(!d[4].isEmpty()){gap(c,6);c.addView(text("종류: "+d[4]+(d[5].isEmpty()?"":" · 장소: "+d[5]),13,INK,false));}
+            if(!d[6].isEmpty()){gap(c,5);c.addView(text(d[6],13,MUTED,false));}
+            gap(c,10);
+            LinearLayout actions=row();
+            actions.addView(button("▶","재생",false,()->play(d[0])),new LinearLayout.LayoutParams(0,-2,1));
+            actions.addView(button("☰","분석 결과",false,()->openAnalysis(d)),new LinearLayout.LayoutParams(0,-2,1));
+            Button journalAction=button("✎","일지 작성",false,()->editRecord(d[0]));
+            setActionEnabled(journalAction,!journalLocked,"보고 처리 중");
+            actions.addView(journalAction,new LinearLayout.LayoutParams(0,-2,1));
+            c.addView(actions);gap(c,4);
+            String reportLabel=included?"층간소음보고에서 생략":busy?"층간소음 보고 처리 중":omitted?"층간소음으로 다시 보고":"층간소음으로 보고";
+            boolean canToggleReport=!busy&&(included||journalComplete);
+            Button reportAction=button("⚑",reportLabel,canToggleReport&&!included,()->toggleIncidentReport(d[0]));
+            setActionEnabled(reportAction,canToggleReport,!journalComplete?"발생 일지 작성 후 사용 가능":"보고 처리 중");
+            boolean canDelete=!included&&!busy;
+            Button deleteAction=button("✕","삭제",false,()->deleteRecord(d));
+            setActionEnabled(deleteAction,canDelete,included?"층간소음보고에서 생략한 후 삭제 가능":"보고 처리 중");
+            LinearLayout more=row();
+            more.addView(reportAction,new LinearLayout.LayoutParams(0,-2,2));
+            more.addView(deleteAction,new LinearLayout.LayoutParams(0,-2,1));
+            c.addView(more);
+            if(!journalComplete&&!included){gap(c,5);c.addView(text("소음 발생 일지를 저장하면 층간소음으로 보고할 수 있습니다.",11,MUTED,false));}
+            else if(included){gap(c,5);c.addView(text("위원회에 보고 중인 녹음은 삭제할 수 없습니다. 먼저 보고서에서 생략해 주세요.",11,Color.rgb(168,76,67),false));}
+            else if(omitted){gap(c,5);c.addView(text("위원회 제출이 철회되어 이 기기의 녹음을 삭제할 수 있습니다.",11,MUTED,false));}
+            card(body,c);
+        }
+    }
     private void openAnalysis(String[] data) {
         analysisId = data[0];
         page = "분석";
@@ -1376,6 +1515,7 @@ public class MainActivity extends Activity {
 
     private void editRecord(String id){
         String raw=getPreferences(0).getString("record_"+id,"");String[] parsed=parseRecord(raw);if(parsed.length<8)return;final String[] d=Arrays.copyOf(parsed,Math.max(ROW_MIN,parsed.length));
+        if(isReportPending(d)||reportTransitions.contains(id)){showMessageDialog("보고 처리 중","보고 상태 변경이 끝난 뒤 일지를 수정해 주세요.",false);return;}
         LinearLayout form=column();form.addView(text("녹음 시간",12,MUTED,true));gap(form,3);form.addView(text(date(Long.parseLong(d[2]))+"부터 "+date(Long.parseLong(d[3])),13,INK,false));gap(form,12);
         Button kind = button(d[4].isEmpty() ? "소음 유형 검색" : d[4], false, () -> {});
         kind.setTag(d[4]);
@@ -1396,7 +1536,44 @@ public class MainActivity extends Activity {
         boolean hasJournal=!d[4].isEmpty()||!d[5].isEmpty()||!d[6].isEmpty()||"1".equals(d[7])||!d[R_TAG].isEmpty()||!d[R_OTHER_NAME].isEmpty()||!d[R_OTHER_DONG].isEmpty()||!d[R_OTHER_HO].isEmpty()||!d[R_FREQUENCY].isEmpty();
         showCustomDialog(hasJournal?"소음 발생 일지 수정":"소음 발생 일지 작성",scroll,"저장","취소",false,()->{String selectedKind=(String)kind.getTag();if(selectedKind.isEmpty()){kind.setError("소음 유형을 선택해 주세요.");return false;}if(impact.getText().toString().trim().isEmpty()){impact.setError("피해 상황을 입력해 주세요.");impact.requestFocus();return false;}String[] latest=readRecording(id);if(latest.length<ROW_MIN)return false;latest[4]=selectedKind;latest[5]=place.getText().toString().trim();latest[6]=impact.getText().toString().trim();latest[7]=relevant.isChecked()?"1":"0";latest[R_TAG]=tag.getText().toString().trim();latest[R_OTHER_NAME]=otherName.getText().toString().trim();latest[R_OTHER_DONG]=otherDong.getText().toString().trim().replaceAll("동$","");latest[R_OTHER_HO]=otherHo.getText().toString().trim().replaceAll("호$","");latest[R_FREQUENCY]=frequency.getText().toString().trim();for(int i=12;i<=15;i++)latest[i]="";latest[16]="";latest[17]="";latest[18]="";latest[21]="";latest[19]="1";getPreferences(0).edit().putString("record_"+id,packRecord(latest)).apply();if(!latest[R_RECORD_NO].isEmpty()){saveIncidentJournal(latest);page=page.equals("분석")?"분석":"소음기록";render();return true;}page=page.equals("분석")?"분석":"기록";render();handler.post(()->showMessageDialog("저장 완료","소음 발생 일지와 입주자 정보를 이 기기에 저장했습니다.",true));return true;},null);
     }
-    private void deleteRecord(String[] d){String[] current=readRecording(d[0]);if(current.length<ROW_MIN)return;if(recordingUploads.containsKey(current[0])){showMessageDialog("원본 등록 중","등록이 끝난 뒤 다시 확인해 주세요.",false);return;}if(!current[R_RECORD_NO].isEmpty()){showMessageDialog("원본 보존","서버에 등록된 원본 음원과 일련번호는 무결성 보존을 위해 삭제할 수 없습니다.",false);return;}LinearLayout content=column();content.addView(text("이 녹음 파일과 연결된 일지를 삭제합니다. 삭제한 기록은 복구할 수 없습니다.",14,MUTED,false));showCustomDialog("녹음 기록 삭제",content,"삭제","취소",true,()->{File audio=new File(d[1]);if(audio.exists()&&!audio.delete()){showMessageDialog("삭제하지 못했습니다","녹음 파일을 삭제할 수 없습니다. 파일 접근 상태를 확인해 주세요.",false);return false;}getPreferences(0).edit().remove("record_"+d[0]).apply();page="기록";render();handler.post(()->showMessageDialog("삭제 완료","녹음 파일과 연결된 일지를 삭제했습니다.",true));return true;},null);}    private String playTime(int ms){return durationMinutesSeconds(ms);}
+    private void deleteRecord(String[] record){
+        String id=record[0];
+        String[] current=readRecording(id);
+        if(current.length<ROW_MIN)return;
+        if(isIncludedInReport(current)){
+            showMessageDialog("삭제할 수 없습니다","층간소음보고에 포함된 녹음입니다. 먼저 '층간소음보고에서 생략'을 완료해 주세요.",false);
+            return;
+        }
+        if(isReportBusy(current)){
+            showMessageDialog("처리 중입니다","원본 등록이나 보고 상태 변경이 끝난 뒤 삭제해 주세요.",false);
+            return;
+        }
+        boolean serverOriginalPreserved=!current[R_RECORD_NO].isEmpty();
+        LinearLayout content=column();
+        String message=serverOriginalPreserved
+                ?"이 기기의 녹음 파일과 일지 연결을 삭제합니다. 서버에 등록된 원본 녹음과 무결성·제출 철회 이력은 보존됩니다. 삭제 후 이 기기에서는 복구할 수 없습니다."
+                :"이 기기의 녹음 파일과 연결된 일지를 삭제합니다. 삭제한 기록은 복구할 수 없습니다.";
+        content.addView(text(message,14,MUTED,false));
+        showCustomDialog("녹음 기록 삭제",content,"삭제","취소",true,()->{
+            String[] latest=readRecording(id);
+            if(latest.length<ROW_MIN||isIncludedInReport(latest)||isReportBusy(latest)){
+                showMessageDialog("삭제할 수 없습니다","보고 상태가 변경되었습니다. 목록을 다시 확인해 주세요.",false);
+                return false;
+            }
+            File audio=new File(latest[1]);
+            if(audio.exists()&&!audio.delete()){
+                showMessageDialog("삭제하지 못했습니다","녹음 파일을 삭제할 수 없습니다. 파일 접근 상태를 확인해 주세요.",false);
+                return false;
+            }
+            getPreferences(0).edit().remove("record_"+id).remove(committeeSubmissionKey(latest)).remove(committeeSubmissionBlockKey(latest)).apply();
+            analyzingRecordings.remove(id);reportTransitions.remove(id);
+            page="기록";render();
+            String completed=serverOriginalPreserved?"이 기기의 녹음과 일지 연결을 삭제했습니다. 서버 원본과 감사 이력은 유지됩니다.":"녹음 파일과 연결된 일지를 삭제했습니다.";
+            handler.post(()->showMessageDialog("삭제 완료",completed,true));
+            return true;
+        },null);
+    }
+    private String playTime(int ms){return durationMinutesSeconds(ms);}
     private void play(String id){
         try{
             if(playbackDialog!=null)playbackDialog.dismiss();
