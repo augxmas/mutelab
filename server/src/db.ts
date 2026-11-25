@@ -35,7 +35,7 @@ export async function querySql<T = Record<string, unknown>>(query: string, param
   const request = pool.request();
   if (parameters) for (const [name, value] of Object.entries(parameters)) request.input(name, value);
   const result = await request.query(query);
-  return result.recordset as T[];
+  return (result.recordset ?? []) as T[];
 }
 
 export async function executeSql(query: string): Promise<void> {
