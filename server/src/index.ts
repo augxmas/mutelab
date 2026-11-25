@@ -408,8 +408,9 @@ app.put('/api/recordings/:recordNo/journal', auth, async (req: RequestWithUser, 
     `);
     res.json({ recordNo, message: '원본 녹음에 연결된 발생 일지를 저장했습니다.' });
   } catch (error) {
-    console.error('journal save error:', error instanceof Error ? error.message : error);
-    if ((error as { number?: number }).number === 51012) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('journal save error:', errorMessage);
+    if ((error as { number?: number }).number === 51012 || /Recording not found/i.test(errorMessage)) {
       fail(res, 404, '현재 로그인 계정에서 이 녹음 원본을 찾을 수 없습니다. 이 기록을 만든 계정으로 다시 로그인해 주세요.');
       return;
     }
