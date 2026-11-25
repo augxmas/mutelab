@@ -3,4 +3,8 @@
 /app/build/
 /server/node_modules/
 /server/.env
+/server/.env.committee-review
 /server/dist/
+/apt_collector/node_modules/
+/apt_collector/dist/
+/apt_collector/logs/

@@ -1,0 +1,151 @@
+textarea {
+  width: 100%;
+  min-height: 76px;
+  margin-top: .38rem;
+  padding: .65rem .78rem;
+  resize: vertical;
+  border: 1px solid #bfcec6;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea:focus {
+  outline: 3px solid #9ccab6;
+  outline-offset: 2px;
+}
+
+.integrity-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: .25rem .6rem;
+  border-radius: 999px;
+  font-size: .78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.integrity-badge.verified,
+.integrity-badge.resolved {
+  background: #dff2e8;
+  color: #155a3f;
+}
+
+.integrity-badge.pending {
+  background: #fff2cf;
+  color: #795a10;
+}
+
+.integrity-badge.blocked {
+  background: #fde4e1;
+  color: #982f28;
+}
+
+.integrity-box {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #b8cdc2;
+  border-radius: 12px;
+  background: #f8fbf9;
+}
+
+.integrity-box.blocked {
+  border-color: #dfaaa5;
+  background: #fff8f7;
+}
+
+.integrity-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .55rem;
+}
+
+.integrity-head .secondary {
+  margin-left: auto;
+}
+
+.hash-list {
+  display: grid;
+  gap: .55rem;
+  margin-top: .8rem;
+}
+
+.hash-list .detail-item strong {
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: .78rem;
+  overflow-wrap: anywhere;
+}
+
+.integrity-warning {
+  margin: .85rem 0 0;
+  color: #982f28;
+  font-weight: 800;
+}
+
+.resolution-form {
+  display: grid;
+  gap: .7rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #efc7c3;
+}
+
+.resolution-form .primary {
+  justify-self: start;
+}
+
+.counterpart-form {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1.4fr .7fr .7fr 2fr auto;
+  align-items: end;
+  gap: .8rem;
+  padding: 1rem;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.counterpart-form h3,
+.counterpart-form > .muted,
+.counterpart-form .audit-note {
+  grid-column: 1 / -1;
+}
+
+.counterpart-form h3,
+.counterpart-form > .muted,
+.counterpart-form .audit-note {
+  margin: 0;
+}
+
+.counterpart-form textarea {
+  min-height: 44px;
+}
+
+.audit-note {
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+@media (max-width: 1100px) {
+  .counterpart-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .counterpart-form label:nth-of-type(4),
+  .counterpart-form .primary {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .counterpart-form {
+    grid-template-columns: 1fr;
+  }
+
+  .counterpart-form > * {
+    grid-column: 1 !important;
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "apt-complex-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Quota-safe daily migration of MOLIT apartment complex data into SQL Server",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=../server/.env dist/daily-collector.js --daily",
+    "daily": "node --env-file=../server/.env dist/daily-collector.js --daily",
+    "preflight": "node --env-file=../server/.env dist/preflight.js",
+    "dev": "node --env-file=../server/.env --import tsx src/daily-collector.ts --daily",
+    "legacy": "node --env-file=../server/.env dist/collector.js"
+  },
+  "dependencies": { "mssql": "^11.0.1" },
+  "devDependencies": { "@types/mssql": "^9.1.7", "@types/node": "^22.0.0", "tsx": "^4.19.0", "typescript": "^5.7.0" }
+}

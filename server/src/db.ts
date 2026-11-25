@@ -45,8 +45,32 @@ export async function executeSql(query: string): Promise<void> {
 
 export async function initializeDatabase(): Promise<void> {
   if (memberDataKey.length < 32) throw new Error('MEMBER_DATA_KEY must contain at least 32 characters.');
-  const ready = await querySql<{ Ready: number }>(`SELECT CASE WHEN OBJECT_ID(N'dbo.AppUsers',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.EmailChallenges',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.VerifiedEmailTokens',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.NoiseRecordings',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.NoiseIncidentJournals',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.EncryptMemberData',N'FN') IS NOT NULL AND OBJECT_ID(N'dbo.DecryptMemberData',N'FN') IS NOT NULL THEN 1 ELSE 0 END AS Ready`);
-  if (ready[0]?.Ready === 1) return;
+  const [state] = await querySql<{ CoreReady: number; RecordingTriggerReady: number; RecordingInsertTriggerReady: number }>(`
+    SELECT CASE WHEN OBJECT_ID(N'dbo.AppUsers',N'U') IS NOT NULL
+      AND OBJECT_ID(N'dbo.EmailChallenges',N'U') IS NOT NULL
+      AND OBJECT_ID(N'dbo.VerifiedEmailTokens',N'U') IS NOT NULL
+      AND OBJECT_ID(N'dbo.NoiseRecordings',N'U') IS NOT NULL
+      AND OBJECT_ID(N'dbo.NoiseIncidentJournals',N'U') IS NOT NULL
+      AND OBJECT_ID(N'dbo.EncryptMemberData',N'FN') IS NOT NULL
+      AND OBJECT_ID(N'dbo.DecryptMemberData',N'FN') IS NOT NULL
+      AND OBJECT_ID(N'dbo.MemberLookupHash',N'FN') IS NOT NULL THEN 1 ELSE 0 END AS CoreReady,
+      CASE WHEN EXISTS(SELECT 1 FROM sys.triggers
+        WHERE object_id=OBJECT_ID(N'dbo.TR_NoiseRecordings_InsertOnly',N'TR') AND is_disabled=0)
+        THEN 1 ELSE 0 END AS RecordingTriggerReady,
+      CASE WHEN EXISTS(SELECT 1 FROM sys.triggers
+        WHERE object_id=OBJECT_ID(N'dbo.TR_NoiseRecordings_ValidateInsert',N'TR') AND is_disabled=0)
+        THEN 1 ELSE 0 END AS RecordingInsertTriggerReady
+  `);
+  if (state?.CoreReady === 1 && state.RecordingTriggerReady === 1 && state.RecordingInsertTriggerReady === 1) return;
+  if (state?.CoreReady === 1) {
+    try {
+      await executeSql(`CREATE OR ALTER TRIGGER dbo.TR_NoiseRecordings_InsertOnly ON dbo.NoiseRecordings INSTEAD OF UPDATE, DELETE AS BEGIN SET NOCOUNT ON; THROW 51010, 'Noise recording ledger is insert-only.', 1; END;`);
+      await executeSql(`CREATE OR ALTER TRIGGER dbo.TR_NoiseRecordings_ValidateInsert ON dbo.NoiseRecordings AFTER INSERT AS BEGIN SET NOCOUNT ON; IF EXISTS(SELECT 1 FROM inserted WHERE AudioLength<>DATALENGTH(AudioData) OR AudioSha256<>CONVERT(char(64),HASHBYTES('SHA2_256',AudioData),2)) THROW 51011, 'Noise recording hash or length is invalid.', 1; END;`);
+      return;
+    } catch {
+      throw new Error('The recording integrity triggers are missing. Restore dbo.TR_NoiseRecordings_InsertOnly and dbo.TR_NoiseRecordings_ValidateInsert with a database administrator account.');
+    }
+  }
   await executeSql(`CREATE OR ALTER FUNCTION dbo.EncryptMemberData(@clearText nvarchar(max), @secret nvarchar(128)) RETURNS varbinary(max) AS BEGIN RETURN EncryptByPassPhrase(@secret, @clearText, 1, HASHBYTES('SHA2_256', N'MuteLab.MemberData.v1')); END;`);
   await executeSql(`CREATE OR ALTER FUNCTION dbo.DecryptMemberData(@cipherText varbinary(max), @secret nvarchar(128)) RETURNS nvarchar(max) AS BEGIN RETURN CONVERT(nvarchar(max), DecryptByPassPhrase(@secret, @cipherText, 1, HASHBYTES('SHA2_256', N'MuteLab.MemberData.v1'))); END;`);
   await executeSql(`CREATE OR ALTER FUNCTION dbo.MemberLookupHash(@value nvarchar(254), @secret nvarchar(128)) RETURNS char(64) AS BEGIN RETURN CONVERT(char(64), HASHBYTES('SHA2_256', @secret + LOWER(@value)), 2); END;`);
@@ -88,6 +112,7 @@ export async function initializeDatabase(): Promise<void> {
     IF OBJECT_ID(N'dbo.NoiseIncidentJournals',N'U') IS NULL CREATE TABLE dbo.NoiseIncidentJournals(RecordNo varchar(13) NOT NULL CONSTRAINT PK_NoiseIncidentJournals PRIMARY KEY,UserId int NOT NULL,JournalCipher varbinary(max) NOT NULL,UpdatedAt datetime2(0) NOT NULL CONSTRAINT DF_NoiseIncidentJournals_UpdatedAt DEFAULT SYSUTCDATETIME(),CONSTRAINT FK_NoiseIncidentJournals_Recording FOREIGN KEY(RecordNo) REFERENCES dbo.NoiseRecordings(RecordNo),CONSTRAINT FK_NoiseIncidentJournals_AppUsers FOREIGN KEY(UserId) REFERENCES dbo.AppUsers(UserId));
     DELETE FROM dbo.EmailChallenges WHERE ExpiresAt<=SYSUTCDATETIME(); DELETE FROM dbo.VerifiedEmailTokens WHERE ExpiresAt<=SYSUTCDATETIME();`);
   await executeSql(`CREATE OR ALTER TRIGGER dbo.TR_NoiseRecordings_InsertOnly ON dbo.NoiseRecordings INSTEAD OF UPDATE, DELETE AS BEGIN SET NOCOUNT ON; THROW 51010, 'Noise recording ledger is insert-only.', 1; END;`);
+  await executeSql(`CREATE OR ALTER TRIGGER dbo.TR_NoiseRecordings_ValidateInsert ON dbo.NoiseRecordings AFTER INSERT AS BEGIN SET NOCOUNT ON; IF EXISTS(SELECT 1 FROM inserted WHERE AudioLength<>DATALENGTH(AudioData) OR AudioSha256<>CONVERT(char(64),HASHBYTES('SHA2_256',AudioData),2)) THROW 51011, 'Noise recording hash or length is invalid.', 1; END;`);
 }
 
 

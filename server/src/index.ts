@@ -1,34 +1,43 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import express, { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { executeSql, initializeDatabase, querySql, sqlString, memberDataKey } from './db';
+import { sendVerificationEmail, type EmailPurpose } from './verification-email';
+import { committeeAuth, initializeCommittee } from './committee-auth';
+import { cleanupCommitteeSubmissionArtifacts, committeeDataRouter, notifyRecordingIntegrityMismatch, readResidentNotification,
+  residentCommitteeContacts, residentNotifications, retryPendingNotificationEmail, submitCommitteeIncident,
+  uploadCommitteeSubmissionAudio, withdrawCommitteeIncident } from './committee-data';
 
 const host = process.env.HOST ?? '0.0.0.0';
 const port = Number(process.env.PORT ?? 3100);
 const jwtSecret = process.env.JWT_SECRET ?? '';
-const emailSecret = process.env.MOCK_EMAIL_SECRET ?? '';
-const mockEmail = (process.env.MOCK_EMAIL ?? 'true').toLowerCase() === 'true';
+const emailSecret = process.env.EMAIL_CODE_SECRET ?? '';
+const emailFrom = process.env.EMAIL_FROM ?? 'no-reply@mutelab.kr';
 const demoLoginEnabled = (process.env.DEMO_LOGIN ?? (process.env.NODE_ENV === 'production' ? 'false' : 'true')).toLowerCase() === 'true';
-const codeTtlMinutes = Math.min(30, Math.max(3, Number(process.env.MOCK_EMAIL_CODE_TTL_MINUTES ?? 10)));
+const codeTtlMinutes = Number(process.env.EMAIL_CODE_TTL_MINUTES ?? 10);
 const app = express();
 
 if (jwtSecret.length < 32 || emailSecret.length < 32) {
-  throw new Error('JWT_SECRET and MOCK_EMAIL_SECRET must each contain at least 32 characters.');
+  throw new Error('JWT_SECRET and EMAIL_CODE_SECRET must each contain at least 32 characters.');
 }
-if (process.env.NODE_ENV === 'production' && mockEmail) {
-  throw new Error('MOCK_EMAIL must be disabled in production.');
+if (!validEmail(emailFrom) || !Number.isInteger(codeTtlMinutes) || codeTtlMinutes < 3 || codeTtlMinutes > 30) {
+  throw new Error('Check EMAIL_FROM and EMAIL_CODE_TTL_MINUTES (3–30).');
 }
 
 app.disable('x-powered-by');
-app.use(helmet({ crossOriginResourcePolicy: false }));
+if (process.env.TRUST_LOOPBACK_PROXY === 'true') app.set('trust proxy', 'loopback');
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  contentSecurityPolicy: { directives: { mediaSrc: ["'self'", 'blob:'], frameSrc: ["'self'", 'blob:'] } },
+}));
 app.use(express.json({ limit: '32kb' }));
 
 type UserClaims = { sub: string; loginId: string; email: string };
 type RequestWithUser = Request & { user?: UserClaims };
-type EmailPurpose = 'signup' | 'find-id' | 'reset-password';
 type SqlUser = { UserId: number; LoginId: string; Email: string; PasswordHash: string; ProfileJson: string | null };
 
 const requestWindows = new Map<string, { start: number; count: number }>();
@@ -36,7 +45,7 @@ function sqlLiteral(value: string): string { return sqlString(value); }
 function digest(value: string, secret = emailSecret): string { return crypto.createHmac('sha256', secret).update(value).digest('hex'); }
 function tokenDigest(value: string): string { return crypto.createHash('sha256').update(value).digest('hex'); }
 function validEmail(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return typeof value === 'string' && value.length <= 254 && /^[A-Za-z0-9_+%=-]+(?:\.[A-Za-z0-9_+%=-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(value);
 }
 function validLoginId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{4,40}$/.test(value);
@@ -71,6 +80,19 @@ async function lookupUserByEmail(email: string): Promise<SqlUser | null> {
   const row = await scalarJson<SqlUser>(`SELECT COALESCE((SELECT UserId, dbo.DecryptMemberData(LoginIdCipher,${sqlLiteral(memberDataKey)}) AS LoginId, dbo.DecryptMemberData(EmailCipher,${sqlLiteral(memberDataKey)}) AS Email, PasswordHash FROM dbo.AppUsers WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), N'{}') AS JsonResult`);
   return row?.UserId ? row : null;
 }
+async function committeeEmailExists(email: string): Promise<boolean> {
+  const rows = await querySql<{ Id: number }>(
+    `SELECT TOP (1) Id FROM (
+      SELECT CONVERT(bigint,MemberId) AS Id FROM dbo.CommitteeMembers
+        WHERE EmailHash=dbo.MemberLookupHash(@email,@key)
+      UNION ALL
+      SELECT ApplicationId AS Id FROM dbo.CommitteeApplications
+        WHERE Status='PENDING' AND EmailHash=dbo.MemberLookupHash(@email,@key)
+    ) registered`,
+    { email, key: memberDataKey },
+  );
+  return rows.length > 0;
+}
 async function consumeEmailToken(token: string, purpose: EmailPurpose): Promise<string | null> {
   const hashed = tokenDigest(token);
   const result = await scalarJson<{ EmailHash: string | null }>(`
@@ -86,7 +108,7 @@ async function consumeEmailToken(token: string, purpose: EmailPurpose): Promise<
 app.get('/api/health', async (_req, res) => {
   try {
     await querySql('SELECT 1 AS ok');
-    res.json({ status: 'ok', database: 'connected', simulatedEmail: mockEmail });
+    res.json({ status: 'ok', database: 'connected' });
   } catch (error) {
     console.error('health database error:', error instanceof Error ? error.message : error);
     fail(res, 503, '로컬 데이터베이스에 연결할 수 없습니다. SQL Server 서비스 설정과 server/.env를 확인해 주세요.');
@@ -97,22 +119,32 @@ app.post('/api/auth/email/start', async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const purpose = req.body?.purpose as EmailPurpose;
   const ip = req.ip ?? 'unknown';
-  if (!validEmail(email) || !['signup', 'find-id', 'reset-password'].includes(purpose)) { fail(res, 400, '이메일 주소와 인증 목적을 확인해 주세요.'); return; }
+  if (!validEmail(email) || !['signup', 'find-id', 'reset-password', 'committee-signup'].includes(purpose)) { fail(res, 400, '이메일 주소와 인증 목적을 확인해 주세요.'); return; }
   if (rateLimit(`email-ip:${ip}`, 12, 10 * 60_000) || rateLimit(`email:${email}`, 1, 45_000)) { fail(res, 429, '요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.'); return; }
-  if (!mockEmail) { fail(res, 503, '메일 서버가 설정되지 않았습니다.'); return; }
   try {
     const existing = await lookupUserByEmail(email);
     if (purpose === 'signup' && existing) { fail(res, 409, '이미 가입된 이메일입니다. 로그인하거나 비밀번호를 재설정해 주세요.'); return; }
-    if (purpose !== 'signup' && !existing) { res.json({ message: '등록된 주소라면 인증코드를 보냈습니다.', simulated: true }); return; }
+    if (purpose === 'committee-signup' && await committeeEmailExists(email)) { fail(res, 409, '이미 위원회에 등록된 이메일입니다.'); return; }
+    const message = `이메일 인증코드를 요청했습니다. ${codeTtlMinutes}분 안에 받은 코드를 입력해 주세요.`;
+    if (['find-id', 'reset-password'].includes(purpose) && !existing) { res.json({ message }); return; }
     const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
     const expires = new Date(Date.now() + codeTtlMinutes * 60_000).toISOString().slice(0, 19).replace('T', ' ');
     const codeHash = digest(`${email}:${purpose}:${code}`);
     await executeSql(`
-      DELETE FROM dbo.EmailChallenges WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=${sqlLiteral(purpose)};
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+      DELETE FROM dbo.EmailChallenges WITH (HOLDLOCK) WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=${sqlLiteral(purpose)};
       INSERT INTO dbo.EmailChallenges(EmailHash,Purpose,CodeHash,ExpiresAt,Attempts)
       VALUES(dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}),${sqlLiteral(purpose)},${sqlLiteral(codeHash)},CONVERT(datetime2,${sqlLiteral(expires)},120),0);
+      COMMIT TRANSACTION;
     `);
-    res.json({ message: `가상 이메일 인증코드를 발급했습니다. ${codeTtlMinutes}분 안에 입력해 주세요.`, simulated: true, devCode: code });
+    try {
+      await sendVerificationEmail({ from: emailFrom, to: email, code, ttlMinutes: codeTtlMinutes, purpose });
+    } catch (error) {
+      await executeSql(`DELETE FROM dbo.EmailChallenges WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=${sqlLiteral(purpose)} AND CodeHash=${sqlLiteral(codeHash)};`);
+      throw error;
+    }
+    res.json({ message });
   } catch (error) {
     console.error('email start error:', error instanceof Error ? error.message : error);
     fail(res, 500, '인증코드를 발급하지 못했습니다.');
@@ -123,11 +155,13 @@ app.post('/api/auth/email/verify', async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const purpose = req.body?.purpose as EmailPurpose;
   const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
-  if (!validEmail(email) || !['signup', 'find-id', 'reset-password'].includes(purpose) || !/^\d{6}$/.test(code)) { fail(res, 400, '이메일 주소와 6자리 인증코드를 확인해 주세요.'); return; }
+  if (!validEmail(email) || !['signup', 'find-id', 'reset-password', 'committee-signup'].includes(purpose) || !/^\d{6}$/.test(code)) { fail(res, 400, '이메일 주소와 6자리 인증코드를 확인해 주세요.'); return; }
   try {
     const codeHash = digest(`${email}:${purpose}:${code}`);
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const changed = await scalarJson<{ Verified: boolean }>(`
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
       DECLARE @verified bit=0;
       DELETE FROM dbo.EmailChallenges
         WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=${sqlLiteral(purpose)} AND CodeHash=${sqlLiteral(codeHash)} AND Attempts<5 AND ExpiresAt>SYSUTCDATETIME();
@@ -138,6 +172,7 @@ app.post('/api/auth/email/verify', async (req, res) => {
         SET @verified=1;
       END
       ELSE UPDATE dbo.EmailChallenges SET Attempts=Attempts+1 WHERE EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=${sqlLiteral(purpose)} AND Attempts<5;
+      COMMIT TRANSACTION;
       SELECT (SELECT @verified AS Verified FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS JsonResult;
     `);
     const verified = changed?.Verified === true;
@@ -159,17 +194,21 @@ app.post('/api/auth/signup', async (req, res) => {
   try {
     const passwordHash = await bcrypt.hash(password, 12);
     const tokenHash = tokenDigest(verificationToken);
-    await executeSql(`
+    const user = await scalarJson<{ UserId: number }>(`
+      SET XACT_ABORT ON;
       BEGIN TRANSACTION;
-      DECLARE @VerifiedHolder TABLE(Email nvarchar(254));
+      DECLARE @userId int;
       DELETE FROM dbo.VerifiedEmailTokens
-        OUTPUT deleted.Email INTO @VerifiedHolder(Email)
-        WHERE TokenHash=${sqlLiteral(tokenHash)} AND Email=${sqlLiteral(email)} AND Purpose=N'signup' AND ExpiresAt>SYSUTCDATETIME();
+        WHERE TokenHash=${sqlLiteral(tokenHash)} AND EmailHash=dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}) AND Purpose=N'signup' AND ExpiresAt>SYSUTCDATETIME();
       IF @@ROWCOUNT<>1 THROW 51001, 'Email verification is required.', 1;
       INSERT INTO dbo.AppUsers(LoginIdCipher,LoginIdHash,EmailCipher,EmailHash,PasswordHash) VALUES(dbo.EncryptMemberData(${sqlLiteral(loginId)},${sqlLiteral(memberDataKey)}),dbo.MemberLookupHash(${sqlLiteral(loginId)},${sqlLiteral(memberDataKey)}),dbo.EncryptMemberData(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}),dbo.MemberLookupHash(${sqlLiteral(email)},${sqlLiteral(memberDataKey)}),${sqlLiteral(passwordHash)});
+      SET @userId=CONVERT(int,SCOPE_IDENTITY());
       COMMIT TRANSACTION;
+      SELECT (SELECT @userId AS UserId FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS JsonResult;
     `);
-    res.status(201).json({ message: '회원가입이 완료되었습니다. 로그인해 주세요.' });
+    if (!user?.UserId) throw new Error('Signup did not return a user ID');
+    const token = jwt.sign({ sub: String(user.UserId), loginId, email }, jwtSecret, { expiresIn: '12h' });
+    res.status(201).json({ message: '회원가입이 완료되었습니다.', token, loginId, email, profile: null });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (/duplicate|unique|2627|2601/i.test(detail)) { fail(res, 409, '이미 사용 중인 아이디 또는 이메일입니다.'); return; }
@@ -236,6 +275,29 @@ app.post('/api/auth/password/reset', async (req, res) => {
   }
 });
 
+app.get('/api/apartments', auth, async (req, res) => {
+  const name = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+  if (name.length < 2 || name.length > 100) {
+    fail(res, 400, '단지명을 두 글자 이상 입력해 주세요.');
+    return;
+  }
+  const escaped = name.replace(/[~%_\[]/g, value => `~${value}`);
+  try {
+    const apartments = await querySql(`
+      SELECT TOP (30) kaptCode, kaptName,
+             COALESCE(NULLIF(roadAddress,N''), NULLIF(address,N''), NULLIF(legalAddress,N''), CONCAT_WS(N' ',sido,sigungu)) AS address
+      FROM dbo.AptComplexWithDetail
+      WHERE kaptName LIKE @contains ESCAPE N'~'
+      ORDER BY CASE WHEN kaptName=@name THEN 0 WHEN kaptName LIKE @prefix ESCAPE N'~' THEN 1 ELSE 2 END,
+               kaptName, kaptCode;
+    `, { name, contains: `%${escaped}%`, prefix: `${escaped}%` });
+    res.json({ apartments });
+  } catch (error) {
+    console.error('apartment search error:', error instanceof Error ? error.message : error);
+    fail(res, 500, '공동주택을 검색하지 못했습니다.');
+  }
+});
+
 app.get('/api/profile', auth, async (req: RequestWithUser, res) => {
   try {
     const row = await scalarJson<{ ProfileJson: string | null }>(`SELECT COALESCE((SELECT dbo.DecryptMemberData(ProfileCipher,${sqlLiteral(memberDataKey)}) AS ProfileJson FROM dbo.AppUsers WHERE UserId=${sqlLiteral(req.user!.sub)} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), N'{"ProfileJson":null}') AS JsonResult`);
@@ -251,6 +313,19 @@ app.put('/api/profile', auth, async (req: RequestWithUser, res) => {
   const profile = req.body?.profile;
   if (!profile || typeof profile !== 'object' || Array.isArray(profile) || JSON.stringify(profile).length > 3_500) { fail(res, 400, '내 정보 내용을 확인해 주세요.'); return; }
   try {
+    if (profile.profile_manager === false) {
+      profile.profile_kapt_code = '';
+    } else if (profile.profile_kapt_code !== undefined && profile.profile_kapt_code !== '') {
+      const code = profile.profile_kapt_code;
+      if (typeof code !== 'string' || !/^[A-Z0-9]{1,50}$/.test(code)) { fail(res, 400, '공동주택을 다시 선택해 주세요.'); return; }
+      const [apartment] = await querySql<{ kaptName: string }>(
+        'SELECT kaptName FROM dbo.AptComplexWithDetail WHERE kaptCode=@code AND kaptName IS NOT NULL',
+        { code },
+      );
+      if (!apartment) { fail(res, 400, '공동주택을 다시 선택해 주세요.'); return; }
+      profile.profile_house = apartment.kaptName;
+    }
+    if (JSON.stringify(profile).length > 3_500) { fail(res, 400, '내 정보 내용을 확인해 주세요.'); return; }
     await executeSql(`UPDATE dbo.AppUsers SET ProfileCipher=dbo.EncryptMemberData(${sqlLiteral(JSON.stringify(profile))},${sqlLiteral(memberDataKey)}) WHERE UserId=${sqlLiteral(req.user!.sub)};`);
     res.json({ message: '내 정보를 저장했습니다.' });
   } catch (error) {
@@ -307,7 +382,10 @@ app.post('/api/recordings/:recordNo/verify', auth, async (req: RequestWithUser, 
     if (!rows.length) { fail(res, 404, '등록된 소음 측정 원본을 찾을 수 없습니다.'); return; }
     const original = rows[0].AudioSha256.trim().toUpperCase();
     const stored = rows[0].StoredSha256.trim().toUpperCase();
-    res.json({ recordNo, verified: original === stored && original === sha256, originalSha256: original });
+    const verified = original === stored && original === sha256;
+    const notification = verified ? null
+      : await notifyRecordingIntegrityMismatch(Number(req.user!.sub), recordNo, emailFrom);
+    res.json({ recordNo, verified, originalSha256: original, notification });
   } catch (error) {
     console.error('recording verify error:', error instanceof Error ? error.message : error);
     fail(res, 500, '음원 원본을 검증하지 못했습니다.');
@@ -334,6 +412,69 @@ app.put('/api/recordings/:recordNo/journal', auth, async (req: RequestWithUser, 
   }
 });
 
+let activeCommitteeAudioUploads = 0;
+let activeCommitteeSubmissions = 0;
+const committeeUploadWindows = new Map<number, { startedAt: number; count: number }>();
+const committeeSubmissionWindows = new Map<number, { startedAt: number; count: number }>();
+const committeeAudioUploadGuard = (req: RequestWithUser, res: Response, next: NextFunction): void => {
+  const userId = Number(req.user?.sub);
+  const length = Number(req.header('content-length'));
+  if (!Number.isSafeInteger(userId) || userId < 1 || !Number.isSafeInteger(length) || length < 1 || length > 100 * 1024 * 1024) {
+    fail(res, 400, '제출 음원은 100MB 이하의 파일이어야 합니다.');
+    return;
+  }
+  const now = Date.now();
+  const current = committeeUploadWindows.get(userId);
+  const window = !current || now - current.startedAt >= 10 * 60_000
+    ? { startedAt: now, count: 1 } : { startedAt: current.startedAt, count: current.count + 1 };
+  committeeUploadWindows.set(userId, window);
+  if (activeCommitteeAudioUploads >= 2 || window.count > 10) {
+    fail(res, 429, '제출 음원 업로드 요청이 많습니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  if (committeeUploadWindows.size > 10_000) {
+    for (const [id, state] of committeeUploadWindows) if (now - state.startedAt > 10 * 60_000) committeeUploadWindows.delete(id);
+  }
+  activeCommitteeAudioUploads += 1;
+  let released = false;
+  const release = () => { if (!released) { released = true; activeCommitteeAudioUploads -= 1; } };
+  res.once('finish', release);
+  res.once('close', release);
+  next();
+};
+
+const committeeSubmissionGuard = (req: RequestWithUser, res: Response, next: NextFunction): void => {
+  const userId = Number(req.user?.sub);
+  const now = Date.now();
+  const current = committeeSubmissionWindows.get(userId);
+  const window = !current || now - current.startedAt >= 10 * 60_000
+    ? { startedAt: now, count: 1 } : { startedAt: current.startedAt, count: current.count + 1 };
+  committeeSubmissionWindows.set(userId, window);
+  if (committeeSubmissionWindows.size > 10_000) {
+    for (const [id, state] of committeeSubmissionWindows) if (now - state.startedAt > 10 * 60_000) committeeSubmissionWindows.delete(id);
+  }
+  if (activeCommitteeSubmissions >= 2 || window.count > 10) {
+    fail(res, 429, '위원회 제출 검증 요청이 많습니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  activeCommitteeSubmissions += 1;
+  let released = false;
+  const release = () => { if (!released) { released = true; activeCommitteeSubmissions -= 1; } };
+  res.once('finish', release);
+  res.once('close', release);
+  next();
+};
+
+app.post('/api/recordings/:recordNo/committee-audio', auth, committeeAudioUploadGuard,
+  express.raw({ type: 'audio/mp4', limit: '100mb' }),
+  (req: RequestWithUser, res) => uploadCommitteeSubmissionAudio(req, res));
+app.post('/api/recordings/:recordNo/committee-submission', auth, committeeSubmissionGuard,
+  (req: RequestWithUser, res) => submitCommitteeIncident(req, res, emailFrom));
+app.delete('/api/recordings/:recordNo/committee-submission', auth, withdrawCommitteeIncident);
+app.get('/api/committee-contacts', auth, residentCommitteeContacts);
+app.get('/api/notifications', auth, residentNotifications);
+app.post('/api/notifications/:notificationId/read', auth, readResidentNotification);
+
 app.get('/api/reports', auth, async (req: RequestWithUser, res) => {
   try {
     const rows = await querySql<{ JsonResult: string }>(`
@@ -350,13 +491,48 @@ app.get('/api/reports', auth, async (req: RequestWithUser, res) => {
   }
 });
 
+app.use('/api/committee', committeeAuth({
+  jwtSecret, emailSecret, emailFrom, codeTtlMinutes, validEmail, validLoginId, rateLimit,
+}));
+app.use('/api/committee', committeeDataRouter(jwtSecret, emailFrom));
+
+const committeeDirectory = path.resolve(__dirname, '../committee');
+app.get('/committee', (_req, res) => res.sendFile(path.join(committeeDirectory, 'index.html')));
+app.use('/committee', express.static(committeeDirectory, {
+  index: 'index.html', etag: true, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+}));
+
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const httpError = error as { status?: number; type?: string };
+  if (httpError?.status === 413) { fail(res, 413, '요청 파일 또는 입력 내용이 허용 크기를 초과했습니다.'); return; }
+  if (httpError?.status === 400 && httpError.type === 'entity.parse.failed') { fail(res, 400, '요청 형식을 확인해 주세요.'); return; }
   console.error('unhandled API error:', error instanceof Error ? error.message : error);
   fail(res, 500, '요청을 처리하지 못했습니다.');
 });
 
 async function start(): Promise<void> {
   await initializeDatabase();
+  await initializeCommittee();
+  const cleanupStagedCommitteeAudio = async () => {
+    try { await cleanupCommitteeSubmissionArtifacts(); }
+    catch (error) { console.error('committee artifact cleanup error:', error instanceof Error ? error.message : error); }
+  };
+  await cleanupStagedCommitteeAudio();
+  const artifactCleanupTimer = setInterval(cleanupStagedCommitteeAudio, 60 * 60_000);
+  artifactCleanupTimer.unref();
+  let notificationEmailWorkerRunning = false;
+  const deliverPendingNotificationEmails = async () => {
+    if (notificationEmailWorkerRunning) return;
+    notificationEmailWorkerRunning = true;
+    try {
+      for (let index = 0; index < 5 && await retryPendingNotificationEmail(emailFrom); index += 1) { /* drain a bounded batch */ }
+    } catch (error) {
+      console.error('notification email worker error:', error instanceof Error ? error.message : error);
+    } finally { notificationEmailWorkerRunning = false; }
+  };
+  void deliverPendingNotificationEmails();
+  const notificationEmailTimer = setInterval(deliverPendingNotificationEmails, 60_000);
+  notificationEmailTimer.unref();
   if (demoLoginEnabled && process.env.NODE_ENV !== 'production') await seedDemoUser();
   app.listen(port, host, () => console.log(`MuteLab API listening on http://${host}:${port}`));
 }
