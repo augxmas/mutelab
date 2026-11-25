@@ -109,11 +109,13 @@ BEGIN
     IF COL_LENGTH(N'dbo.AptComplexDetail', N'extendedFetchedAt') IS NULL
         ALTER TABLE dbo.AptComplexDetail ADD extendedFetchedAt datetime2(0) NULL;
     ALTER TABLE dbo.AptComplexDetail ALTER COLUMN rawJson nvarchar(max) NULL;
-    UPDATE dbo.AptComplexDetail SET basicFetchedAt=COALESCE(basicFetchedAt,fetchedAt)
-      WHERE rawJson IS NOT NULL AND basicFetchedAt IS NULL;
+    /* Keep references to newly-added columns in a later compilation scope. */
+    EXEC(N'UPDATE dbo.AptComplexDetail
+      SET basicFetchedAt=COALESCE(basicFetchedAt,fetchedAt)
+      WHERE rawJson IS NOT NULL AND basicFetchedAt IS NULL;');
     IF NOT EXISTS(SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'dbo.AptComplexDetail') AND name=N'CK_AptComplexDetail_extendedRawJson')
-        ALTER TABLE dbo.AptComplexDetail ADD CONSTRAINT CK_AptComplexDetail_extendedRawJson
-          CHECK (extendedRawJson IS NULL OR ISJSON(extendedRawJson) = 1);
+        EXEC(N'ALTER TABLE dbo.AptComplexDetail ADD CONSTRAINT CK_AptComplexDetail_extendedRawJson
+          CHECK (extendedRawJson IS NULL OR ISJSON(extendedRawJson) = 1);');
 END;
 GO
 
