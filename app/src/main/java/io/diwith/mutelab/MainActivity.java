@@ -98,6 +98,7 @@ public class MainActivity extends Activity {
     private boolean committeeReportSyncRunning;
     private boolean authenticationExpiryHandled;
     private static final String COMMITTEE_SYNC_PREFIX="committee_submission_sync_";
+    private static final String COMMITTEE_BLOCK_PREFIX="committee_submission_account_block_";
 
     @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);if(!getPreferences(0).getBoolean("auto_login",true))getPreferences(0).edit().remove("auth_token").remove("auth_login_id").remove("auth_email").apply();render();if(!getPreferences(0).getString("auth_token","").isEmpty())handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);}
     @Override protected void onResume(){super.onResume();handler.postDelayed(()->{notificationsChecked=false;checkResidentNotifications();},700);}
@@ -889,36 +890,44 @@ public class MainActivity extends Activity {
     private boolean isCommitteeSubmissionSynced(String[] record){return isIncludedInReport(record)&&committeeSubmissionFingerprint(record).equals(getPreferences(0).getString(committeeSubmissionKey(record),""));}
     private void markCommitteeSubmissionSynced(String[] record){if(isIncludedInReport(record))getPreferences(0).edit().putString(committeeSubmissionKey(record),committeeSubmissionFingerprint(record)).apply();}
     private void clearCommitteeSubmissionSynced(String[] record){getPreferences(0).edit().remove(committeeSubmissionKey(record)).apply();}
+    private String committeeSubmissionBlockKey(String[] record){return COMMITTEE_BLOCK_PREFIX+record[R_RECORD_NO];}
+    private boolean isCommitteeSubmissionAccountBlocked(String[] record){String login=getPreferences(0).getString("auth_login_id","");return !login.isEmpty()&&login.equals(getPreferences(0).getString(committeeSubmissionBlockKey(record),""));}
+    private void markCommitteeSubmissionAccountBlocked(String[] record){String login=getPreferences(0).getString("auth_login_id","");if(!login.isEmpty())getPreferences(0).edit().putString(committeeSubmissionBlockKey(record),login).apply();}
+    private void clearCommitteeSubmissionAccountBlocked(String[] record){getPreferences(0).edit().remove(committeeSubmissionBlockKey(record)).apply();}
 
     private void syncReportedCommitteeSubmissions(){
         if(committeeReportSyncRunning||getPreferences(0).getString("auth_token","").isEmpty())return;
         authenticationExpiryHandled=false;
         ArrayList<String[]> pending=new ArrayList<>();
-        for(String[] record:reportedIncidents())if(!isCommitteeSubmissionSynced(record)&&record[R_RECORD_NO].matches("[0-9]{8}_[0-9]{4}"))pending.add(record);
+        for(String[] record:reportedIncidents())if(!isCommitteeSubmissionSynced(record)&&!isCommitteeSubmissionAccountBlocked(record)&&record[R_RECORD_NO].matches("[0-9]{8}_[0-9]{4}"))pending.add(record);
         if(pending.isEmpty())return;
         committeeReportSyncRunning=true;
-        syncReportedCommitteeSubmission(pending,0,0,0);
+        syncReportedCommitteeSubmission(pending,0,0,0,"");
     }
-    private void syncReportedCommitteeSubmission(ArrayList<String[]> pending,int index,int completed,int failed){
+    private void syncReportedCommitteeSubmission(ArrayList<String[]> pending,int index,int completed,int failed,String firstError){
         if(index>=pending.size()){
             committeeReportSyncRunning=false;
             if("층간소음보고서".equals(page))render();
             if(completed>0)Toast.makeText(this,"위원회 발생일지 동기화 완료 · "+completed+"건",Toast.LENGTH_LONG).show();
-            if(failed>0)Toast.makeText(this,"위원회 제출 대기 · "+failed+"건 (내 정보와 네트워크를 확인해 주세요)",Toast.LENGTH_LONG).show();
+            if(failed>0&&!getPreferences(0).getString("auth_token","").isEmpty()){
+                String reason=firstError.isEmpty()?"내 정보와 네트워크를 확인해 주세요.":firstError;
+                showMessageDialog("위원회 제출 대기",failed+"건을 제출하지 못했습니다.\n\n"+reason+"\n\n문제를 확인한 뒤 보고서 화면의 ‘위원회 제출 다시 동기화’를 눌러 주세요.",false);
+            }
             return;
         }
         String[] candidate=pending.get(index),record=readRecording(candidate[0]);
         if(record.length<ROW_MIN||!isIncludedInReport(record)||isCommitteeSubmissionSynced(record)){
-            syncReportedCommitteeSubmission(pending,index+1,completed,failed);return;
+            syncReportedCommitteeSubmission(pending,index+1,completed,failed,firstError);return;
         }
         apiRequest("PUT","/recordings/"+record[R_RECORD_NO]+"/journal",json("journal",incidentJournal(record)),true,(journalResult,journalError)->{
-            if(journalError!=null){syncReportedCommitteeSubmission(pending,index+1,completed,failed+1);return;}
+            if(journalError!=null){if(journalError.contains("현재 로그인 계정"))markCommitteeSubmissionAccountBlocked(record);syncReportedCommitteeSubmission(pending,index+1,completed,failed+1,firstError.isEmpty()?journalError:firstError);return;}
             submitCommitteeIncident(record,record[R_AUDIO_HASH],(submitted,submitError)->{
-                if(submitError==null){markCommitteeSubmissionSynced(record);syncReportedCommitteeSubmission(pending,index+1,completed+1,failed);}
-                else syncReportedCommitteeSubmission(pending,index+1,completed,failed+1);
+                if(submitError==null){clearCommitteeSubmissionAccountBlocked(record);markCommitteeSubmissionSynced(record);syncReportedCommitteeSubmission(pending,index+1,completed+1,failed,firstError);}
+                else syncReportedCommitteeSubmission(pending,index+1,completed,failed+1,firstError.isEmpty()?submitError:firstError);
             });
         });
     }
+    private void retryReportedCommitteeSubmissions(){for(String[] record:reportedIncidents())clearCommitteeSubmissionAccountBlocked(record);syncReportedCommitteeSubmissions();}
 
     private void setReportOmitted(String id, boolean omitted) {
         String[] record = readRecording(id);
@@ -967,7 +976,8 @@ public class MainActivity extends Activity {
                 report.addView(text(reportPeriod(entry) + " · " + entry[4], 13, INK, true));
                 report.addView(text("소음측정 일련번호 " + entry[R_RECORD_NO], 12, BLUE, true));
                 boolean synced=isCommitteeSubmissionSynced(entry);
-                report.addView(text(synced?"위원회 제출 완료":"위원회 제출 동기화 대기",12,synced?GREEN:Color.rgb(168,76,67),true));
+                boolean accountBlocked=isCommitteeSubmissionAccountBlocked(entry);
+                report.addView(text(synced?"위원회 제출 완료":accountBlocked?"다른 계정의 기록 · 기록을 만든 계정으로 로그인 필요":"위원회 제출 동기화 대기",12,synced?GREEN:Color.rgb(168,76,67),true));
                 if(!synced)hasPendingSubmission=true;
                 if (!entry[5].isEmpty()) report.addView(text("발생 추정 장소 · " + entry[5], 13, MUTED, false));
                 if (!entry[6].isEmpty()) report.addView(text("피해 상황 · " + entry[6], 13, MUTED, false));
@@ -978,12 +988,11 @@ public class MainActivity extends Activity {
             report.addView(button("▤", "통합 보고서 PDF 내보내기", true, this::exportIncidentReport));
             gap(report, 6);
             report.addView(button("위원회 연락처 확인", false, this::showCommitteeContacts));
-            if(hasPendingSubmission){gap(report,6);report.addView(button("위원회 제출 다시 동기화",false,this::syncReportedCommitteeSubmissions));}
+            if(hasPendingSubmission){gap(report,6);report.addView(button("위원회 제출 다시 동기화",false,this::retryReportedCommitteeSubmissions));}
         }
         card(body, report);
         gap(body, 8);
         body.addView(button("기록으로 돌아가기", false, () -> { page = "소음기록"; render(); }));
-        handler.post(this::syncReportedCommitteeSubmissions);
     }
 
     private void showCommitteeContacts(){apiRequest("GET","/committee-contacts",null,true,(data,error)->{if(error!=null){showMessageDialog("위원회 연락처",error,false);return;}JSONArray members=data.optJSONArray("members");LinearLayout content=column();if(members==null||members.length()==0){content.addView(text("제출한 단지의 위원회 연락처가 아직 등록되지 않았습니다.",14,MUTED,false));}else for(int i=0;i<members.length();i++){JSONObject member=members.optJSONObject(i);if(member==null)continue;if(i>0){gap(content,8);View divider=new View(this);divider.setBackgroundColor(BORDER);content.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));gap(content,8);}content.addView(text(member.optString("role")+" · "+member.optString("name"),15,INK,true));content.addView(text(member.optString("mobile"),14,BLUE,false));}showCustomDialog("위원회 연락처",content,null,"닫기",false,null,null);});}
