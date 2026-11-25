@@ -53,11 +53,27 @@ npm run daily
 
 중복 실행은 무시되고, 실패하면 15분 간격으로 최대 3회 재시도합니다. 로그는 `apt_collector/logs`에 생성되며 Git에는 포함되지 않습니다.
 
-Linux 서버에서는 같은 동작을 매일 03:10 cron으로 등록할 수 있습니다.
+Linux 운영 서버에서는 `deploy/mutelab-apt-collector.service`와
+`deploy/mutelab-apt-collector.timer`를 systemd에 설치합니다. 타이머는 서울 시간 기준
+매일 03:10에 실행되며, 서버가 중지되어 실행 시각을 놓친 경우 부팅 후 이어서 실행합니다.
+DB 환경은 `/etc/mutelab/api.env`를 재사용하고 공공데이터 키는 권한을 제한한
+`/etc/mutelab/apt-collector.env`에 둡니다.
 
-```cron
-10 3 * * * cd /opt/mutelab/apt_collector && mkdir -p logs && /usr/bin/node --env-file=../server/.env dist/daily-collector.js --daily >> logs/cron.log 2>&1
+```ini
+DATA_GO_KR_SERVICE_KEY=<공공데이터포털 서비스키>
 ```
+
+```bash
+sudo install -o root -g root -m 0644 deploy/mutelab-apt-collector.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 deploy/mutelab-apt-collector.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mutelab-apt-collector.timer
+```
+
+서비스키가 없으면 `ExecStartPre`에서 실행을 중단하므로, 키를 설정한 뒤 타이머를
+활성화합니다. 실행 로그와 다음 예약 시각은 각각 `journalctl -u
+mutelab-apt-collector.service`와 `systemctl list-timers
+mutelab-apt-collector.timer`로 확인합니다.
 
 ## 주요 설정
 

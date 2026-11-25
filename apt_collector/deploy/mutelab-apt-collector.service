@@ -1,0 +1,36 @@
+[Unit]
+Description=MuteLab apartment public-data daily collector
+Wants=network-online.target
+After=network-online.target mssql-server.service
+ConditionPathExists=/opt/mutelab/apt_collector/dist/daily-collector.js
+
+[Service]
+Type=oneshot
+User=mutelab-api
+Group=mutelab-api
+WorkingDirectory=/opt/mutelab/apt_collector
+EnvironmentFile=/etc/mutelab/api.env
+EnvironmentFile=-/etc/mutelab/apt-collector.env
+Environment=NODE_ENV=production
+Environment=APT_LIST_DAILY_REQUEST_LIMIT=5000
+Environment=APT_BASIS_DAILY_REQUEST_LIMIT=5000
+Environment=APT_LIST_PAGE_SIZE=500
+ExecStartPre=/bin/sh -c 'test -n "$DATA_GO_KR_SERVICE_KEY"'
+ExecStart=/opt/mutelab/node/bin/node /opt/mutelab/apt_collector/dist/daily-collector.js --daily
+TimeoutStartSec=8h
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+

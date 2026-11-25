@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MuteLab apartment public-data collector every day
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+Unit=mutelab-apt-collector.service
+
+[Install]
+WantedBy=timers.target
+
