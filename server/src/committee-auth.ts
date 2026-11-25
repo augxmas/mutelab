@@ -57,12 +57,16 @@ export function committeeAuth(options: {
     if (options.rateLimit('committee-signup:' + req.ip,15,600_000)) return res.status(429).json({error:'잠시 후 다시 시도해 주세요.'});
     const b = req.body ?? {};
     const loginId = field(b.loginId), email = field(b.email).toLowerCase(), kaptCode = field(b.kaptCode);
-    const name = field(b.name), mobile = field(b.mobile).replace(/[\s-]/g,'');
-    const contact = field(b.contact).replace(/[\s-]/g,''), address = field(b.address), role = field(b.role);
+    const name = field(b.name), mobileInput = field(b.mobile), contactInput = field(b.contact);
+    const mobile = mobileInput.replace(/[ -]/g,''), contact = contactInput.replace(/[ -]/g,'');
+    const requestedAddressDetail = field(b.addressDetail) || field(b.detailAddress) || field(b.address);
+    const role = field(b.role);
     const password = b.password, token = field(b.verificationToken), doc = field(b.document), docName = field(b.documentName);
     if (!options.validLoginId(loginId) || !options.validEmail(email) || !/^[A-Z0-9]{1,50}$/.test(kaptCode)
-        || !name || name.length > 80 || !/^010\d{8}$/.test(mobile) || !/^\d{7,15}$/.test(contact)
-        || !address || address.length > 400
+        || !name || name.length > 80 || !/^[0-9 -]+$/.test(mobileInput) || !/^010\d{8}$/.test(mobile)
+        || !/^[0-9 -]+$/.test(contactInput) || !/^\d{8,11}$/.test(contact)
+        || !requestedAddressDetail || requestedAddressDetail.length > 400
+        || /[\u0000-\u001f\u007f]/.test(requestedAddressDetail)
         || !['위원장','위원'].includes(role) || !/^[a-f0-9]{64}$/.test(token)
         || typeof password !== 'string' || !/^[!-~]{8,72}$/.test(password) || !/[a-z]/.test(password)
         || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password) || password !== b.passwordConfirm
@@ -82,9 +86,26 @@ export function committeeAuth(options: {
     const cipher = crypto.createCipheriv('aes-256-gcm',documentKey,iv);
     const document = Buffer.concat([iv,cipher.update(bytes),cipher.final(),cipher.getAuthTag()]);
     const documentSha256 = crypto.createHash('sha256').update(bytes).digest('hex').toUpperCase();
+    const [complex] = await querySql<{ BaseAddress: string | null }>(`
+      SELECT COALESCE(NULLIF(roadAddress,N''),NULLIF(address,N''),NULLIF(legalAddress,N''),
+        NULLIF(CONCAT_WS(N' ',sido,sigungu),N'')) AS BaseAddress
+      FROM dbo.AptComplexWithDetail WHERE kaptCode=@kaptCode;
+    `,{kaptCode});
+    const baseAddress = field(complex?.BaseAddress);
+    // addressDetail is the canonical request field. The aliases keep already-open signup pages working;
+    // any matching base-address prefix is discarded because the database value is authoritative.
+    const addressDetail = !field(b.addressDetail) && !field(b.detailAddress)
+      && (requestedAddressDetail === baseAddress || requestedAddressDetail.startsWith(baseAddress + ' '))
+      ? field(requestedAddressDetail.slice(baseAddress.length)) : requestedAddressDetail;
+    const address = [baseAddress,addressDetail].filter(Boolean).join(' ');
+    if (!baseAddress) return res.status(400).json({error:'선택한 단지의 주소를 확인할 수 없습니다. 단지를 다시 선택해 주세요.'});
+    if (!addressDetail || addressDetail.length > 120 || address.length > 400) {
+      return res.status(400).json({error:'상세주소는 120자 이내로 입력해 주세요.'});
+    }
     const member = JSON.stringify({
-      loginId,name,mobile,contact,address,role,docName,mime,documentSha256,terms:true,privacy:true,disclosure:true,
-      consentVersion:1,consentedAt:new Date().toISOString(),
+      loginId,name,mobile,contact,address,baseAddress,addressDetail,role,docName,mime,documentSha256,
+      terms:true,privacy:true,disclosure:true,
+      consentVersion:2,consentedAt:new Date().toISOString(),
     });
     try {
       const [application] = await querySql<{ApplicationId:number}>(`

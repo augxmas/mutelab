@@ -497,7 +497,11 @@ app.use('/api/committee', committeeAuth({
 app.use('/api/committee', committeeDataRouter(jwtSecret, emailFrom));
 
 const committeeDirectory = path.resolve(__dirname, '../committee');
-app.get('/committee', (_req, res) => res.sendFile(path.join(committeeDirectory, 'index.html')));
+const sendCommitteeIndex: express.RequestHandler = (_req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(committeeDirectory, 'index.html'));
+};
+app.get(['/committee', '/committee/'], sendCommitteeIndex);
 app.use('/committee', express.static(committeeDirectory, {
   index: 'index.html', etag: true, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
 }));

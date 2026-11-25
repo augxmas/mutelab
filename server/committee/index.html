@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>MuteLab 층간소음관리위원회</title>
   <link rel="stylesheet" href="/committee/styles.css">
-  <link rel="stylesheet" href="/committee/state.css">
+  <link rel="stylesheet" href="/committee/state.css?v=20261125-signup-address">
   <link rel="stylesheet" href="/committee/integrity.css">
 </head>
 <body>
@@ -132,11 +132,22 @@
       <form id="signupForm" class="signup-form">
         <label>아이디<input name="loginId" autocomplete="username" minlength="4" maxlength="40" pattern="[A-Za-z0-9_-]{4,40}" required></label>
         <label>이름<input name="name" autocomplete="name" maxlength="80" required></label>
-        <label>모바일폰<input name="mobile" type="tel" autocomplete="tel" placeholder="010-1234-5678" required></label>
-        <label>연락처<input name="contact" type="tel" placeholder="02-1234-5678" required></label>
-        <label class="full">주소<input name="address" autocomplete="street-address" maxlength="400" required></label>
+        <label>모바일폰<input id="signupMobile" name="mobile" type="tel" inputmode="numeric" autocomplete="tel" maxlength="13" pattern="[0-9-]{8,13}" placeholder="010-1234-5678" required></label>
+        <label>연락처<input id="signupContact" name="contact" type="tel" inputmode="numeric" autocomplete="tel" maxlength="13" pattern="[0-9-]{8,13}" placeholder="02-1234-5678" required></label>
+        <label class="full">단지 기본주소<input id="signupBaseAddress" autocomplete="address-line1" readonly aria-readonly="true" placeholder="선택한 단지의 주소가 표시됩니다"></label>
+        <label class="full">상세주소<input id="signupAddressDetail" name="addressDetail" autocomplete="address-line2" maxlength="120" placeholder="동·호수 등 상세주소를 입력해 주세요" required></label>
         <label>직위<select name="role" required><option value="위원">위원</option><option value="위원장">위원장</option></select></label>
-        <label>관리사무소 사업자등록증<input name="document" type="file" accept="application/pdf,image/png,image/jpeg" required><small>PDF, PNG, JPEG · 최대 10MB</small></label>
+        <div class="file-field">
+          <span id="businessDocumentLabel" class="file-label">관리사무소 사업자등록증</span>
+          <input id="businessDocumentInput" class="file-input" name="document" type="file" accept="application/pdf,image/png,image/jpeg" tabindex="-1" aria-labelledby="businessDocumentLabel" aria-required="true">
+          <div id="businessDocumentDropZone" class="file-drop-zone" role="button" tabindex="0" aria-labelledby="businessDocumentLabel businessDocumentInstruction" aria-describedby="businessDocumentHelp businessDocumentStatus">
+            <span class="file-drop-icon" aria-hidden="true">⇧</span>
+            <strong id="businessDocumentInstruction">파일을 끌어 놓거나 클릭해 선택</strong>
+            <span>키보드에서는 Enter 또는 Space를 누르세요.</span>
+          </div>
+          <small id="businessDocumentHelp">PDF, PNG, JPEG · 최대 10MB</small>
+          <p id="businessDocumentStatus" class="file-status" role="status" aria-live="polite">선택된 파일이 없습니다.</p>
+        </div>
         <label>비밀번호<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required><small>8자 이상, 영소문자·숫자·특수문자 포함</small></label>
         <label>비밀번호 확인<input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="72" required></label>
         <div class="consents full">
@@ -144,14 +155,14 @@
           <label class="check-label"><input name="terms" type="checkbox" required>이용약관에 동의합니다.</label>
           <details><summary>개인정보 이용 안내 보기</summary><p>이름, 이메일, 모바일폰, 연락처, 주소, 직위, 사업자등록증과 동의 내역을 회원 확인 및 위원회 기능 제공을 위해 저장합니다. 사업자등록증은 암호화하여 저장합니다.</p></details>
           <label class="check-label"><input name="privacy" type="checkbox" required>개인정보 이용에 동의합니다.</label>
-          <div class="disclosure-box"><strong>필수 공개 동의</strong><p>위원의 이름과 모바일폰 번호는 해당 단지에서 층간소음 발생일지를 제출한 신청세대 입주민에게 공개됩니다.</p></div>
-          <label class="check-label"><input name="disclosure" type="checkbox" required>이름과 모바일폰 번호 공개에 동의합니다.</label>
+          <div class="disclosure-box"><strong>필수 공개 동의</strong><p>위원의 이름과 모바일폰은 해당 단지의 층간소음 신청자에게 공개됩니다.</p></div>
+          <label class="check-label"><input name="disclosure" type="checkbox" required>이름과 모바일폰은 층간소음 신청자에게 공개되는 것에 동의합니다.</label>
         </div>
         <button class="primary full" type="submit">가입 승인 신청</button>
       </form>
       <p id="signupMessage" class="message full" role="status" aria-live="polite"></p>
     </section>
   </dialog>
-  <script src="/committee/app.js" defer></script>
+  <script src="/committee/app.js?v=20261125-signup-address" defer></script>
 </body>
 </html>

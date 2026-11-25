@@ -49,3 +49,111 @@ select {
     max-width: 100%;
   }
 }
+
+input[readonly] {
+  border-color: #d7e2dc;
+  background: #f2f6f4;
+  color: #52645c;
+  cursor: default;
+}
+
+.file-field {
+  min-width: 0;
+  font-size: .91rem;
+  font-weight: 700;
+  color: #304139;
+}
+
+.file-label {
+  display: block;
+}
+
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.file-drop-zone {
+  display: grid;
+  place-items: center;
+  gap: .25rem;
+  min-height: 124px;
+  margin-top: .38rem;
+  padding: 1rem;
+  border: 2px dashed #a8bdb2;
+  border-radius: 10px;
+  background: #f8fbf9;
+  color: #385448;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .16s ease, background-color .16s ease, transform .16s ease;
+}
+
+.file-drop-zone span:not(.file-drop-icon) {
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 400;
+}
+
+.file-drop-zone:hover,
+.file-drop-zone.is-dragover,
+.file-drop-zone:focus-visible {
+  border-color: var(--green);
+  background: var(--soft);
+}
+
+.file-drop-zone:focus-visible {
+  outline: 3px solid #9ccab6;
+  outline-offset: 2px;
+}
+
+.file-drop-zone.is-dragover {
+  transform: translateY(-2px);
+}
+
+.file-drop-zone.has-file {
+  border-style: solid;
+  border-color: var(--green);
+  background: #eef7f2;
+}
+
+.file-drop-zone[aria-invalid="true"] {
+  border-color: var(--danger);
+  background: #fff8f7;
+}
+
+.file-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--green);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.file-status {
+  min-height: 1.3rem;
+  margin: .35rem 0 0;
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.file-status.success {
+  color: var(--green);
+}
+
+.file-status.error {
+  color: var(--danger);
+}

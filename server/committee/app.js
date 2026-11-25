@@ -8,6 +8,7 @@
   let selectedApartment = null;
   let signupEmail = '';
   let signupVerificationToken = '';
+  let signupDocumentFile = null;
   let incidents = [];
   let currentMember = null;
   const selectedRecords = new Set();
@@ -53,6 +54,104 @@
     });
   }
 
+  const phoneDigits = value => String(value || '').replace(/\D/g, '');
+
+  function formatKoreanPhone(value) {
+    const digits = phoneDigits(value);
+    if (digits.startsWith('02')) {
+      if (digits.length === 9) return `${digits.slice(0, 2)}-${digits.slice(2, 5)}-${digits.slice(5)}`;
+      if (digits.length === 10) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+    }
+    if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+    if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+    if (digits.length === 8) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+    return digits;
+  }
+
+  ['#signupMobile', '#signupContact'].forEach(selector => {
+    const input = $(selector);
+    const isMobile = selector === '#signupMobile';
+    const syncPhone = format => {
+      const digits = phoneDigits(input.value);
+      input.value = format ? formatKoreanPhone(digits) : digits;
+      const valid = isMobile ? /^010\d{8}$/.test(digits) : /^\d{8,11}$/.test(digits);
+      input.setCustomValidity(!digits || valid ? ''
+        : isMobile ? '모바일폰은 010으로 시작하는 11자리 숫자로 입력해 주세요.'
+          : '연락처는 지역번호를 포함한 8~11자리 숫자로 입력해 주세요.');
+    };
+    input.addEventListener('focus', () => syncPhone(false));
+    input.addEventListener('input', () => syncPhone(false));
+    input.addEventListener('blur', () => syncPhone(true));
+  });
+
+  function documentTypeAllowed(file) {
+    const allowedTypes = new Set(['application/pdf', 'image/png', 'image/jpeg']);
+    const allowedExtension = /\.(pdf|png|jpe?g)$/i.test(file.name);
+    return allowedTypes.has(file.type) || (!file.type && allowedExtension);
+  }
+
+  function clearDocumentFile(message = '선택된 파일이 없습니다.', invalid = false) {
+    signupDocumentFile = null;
+    $('#businessDocumentInput').value = '';
+    const dropZone = $('#businessDocumentDropZone');
+    const status = $('#businessDocumentStatus');
+    dropZone.classList.remove('has-file');
+    dropZone.setAttribute('aria-invalid', String(invalid));
+    status.classList.toggle('error', invalid);
+    status.classList.remove('success');
+    status.textContent = message;
+  }
+
+  function selectDocumentFile(file) {
+    if (!(file instanceof File) || !file.size) {
+      clearDocumentFile('사업자등록증 파일을 선택해 주세요.', true);
+      return;
+    }
+    if (!documentTypeAllowed(file)) {
+      clearDocumentFile('PDF, PNG, JPEG 파일만 첨부할 수 있습니다.', true);
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      clearDocumentFile('첨부 파일은 10MB 이하여야 합니다.', true);
+      return;
+    }
+    signupDocumentFile = file;
+    const dropZone = $('#businessDocumentDropZone');
+    const status = $('#businessDocumentStatus');
+    dropZone.classList.add('has-file');
+    dropZone.setAttribute('aria-invalid', 'false');
+    status.classList.remove('error');
+    status.classList.add('success');
+    status.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)}MB · 업로드 준비 완료`;
+  }
+
+  const documentInput = $('#businessDocumentInput');
+  const documentDropZone = $('#businessDocumentDropZone');
+  documentInput.addEventListener('change', () => selectDocumentFile(documentInput.files?.[0]));
+  documentDropZone.addEventListener('click', () => documentInput.click());
+  documentDropZone.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    documentInput.click();
+  });
+  ['dragenter', 'dragover'].forEach(type => documentDropZone.addEventListener(type, event => {
+    event.preventDefault();
+    documentDropZone.classList.add('is-dragover');
+  }));
+  ['dragleave', 'drop'].forEach(type => documentDropZone.addEventListener(type, event => {
+    event.preventDefault();
+    documentDropZone.classList.remove('is-dragover');
+  }));
+  documentDropZone.addEventListener('drop', event => {
+    const files = event.dataTransfer?.files;
+    if (!files?.length) return;
+    if (files.length > 1) {
+      clearDocumentFile('사업자등록증 파일은 하나만 첨부해 주세요.', true);
+      return;
+    }
+    selectDocumentFile(files[0]);
+  });
+
   $('#openSignup').addEventListener('click', () => {
     selectedApartment = null;
     signupEmail = '';
@@ -64,6 +163,10 @@
     $('#emailVerifyForm').reset();
     $('#emailVerifyForm').hidden = true;
     $('#signupForm').reset();
+    $('#signupMobile').setCustomValidity('');
+    $('#signupContact').setCustomValidity('');
+    $('#signupBaseAddress').value = '';
+    clearDocumentFile();
     setMessage($('#signupEmailMessage'), '');
     setMessage($('#signupMessage'), '');
     setSignupStep(1);
@@ -75,6 +178,9 @@
     const query = $('#apartmentQuery').value.trim();
     const results = $('#apartmentResults');
     results.replaceChildren();
+    selectedApartment = null;
+    $('#toEmailStep').disabled = true;
+    $('#signupBaseAddress').value = '';
     try {
       const data = await request(`/api/committee/apartments?name=${encodeURIComponent(query)}`);
       if (!data.apartments.length) {
@@ -92,6 +198,7 @@
           selectedApartment = apartment;
           results.querySelectorAll('.apartment-option').forEach(button => button.classList.remove('selected'));
           option.classList.add('selected'); option.setAttribute('aria-selected', 'true');
+          $('#signupBaseAddress').value = apartment.address || '';
           $('#toEmailStep').disabled = false;
         });
         results.append(option);
@@ -104,6 +211,7 @@
   $('#toEmailStep').addEventListener('click', () => {
     if (!selectedApartment) return;
     $('#selectedApartmentText').textContent = `${selectedApartment.kaptName} · ${selectedApartment.address || ''}`;
+    $('#signupBaseAddress').value = selectedApartment.address || '';
     setSignupStep(2);
   });
 
@@ -128,6 +236,7 @@
       });
       signupVerificationToken = data.verificationToken;
       $('#verifiedSummary').textContent = `${selectedApartment.kaptName} · ${signupEmail} 인증 완료`;
+      $('#signupBaseAddress').value = selectedApartment.address || '';
       setSignupStep(3);
     } catch (error) { setMessage($('#signupEmailMessage'), error.message); }
   });
@@ -144,7 +253,7 @@
   $('#signupForm').addEventListener('submit', async event => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const file = form.get('document');
+    const file = signupDocumentFile;
     if (!(file instanceof File) || !file.size) { setMessage($('#signupMessage'), '사업자등록증을 첨부해 주세요.'); return; }
     if (file.size > 10 * 1024 * 1024) { setMessage($('#signupMessage'), '첨부 파일은 10MB 이하여야 합니다.'); return; }
     if (form.get('password') !== form.get('passwordConfirm')) { setMessage($('#signupMessage'), '비밀번호 확인이 일치하지 않습니다.'); return; }
@@ -153,8 +262,8 @@
     try {
       const body = {
         kaptCode: selectedApartment.kaptCode, email: signupEmail, verificationToken: signupVerificationToken,
-        loginId: form.get('loginId'), name: form.get('name'), mobile: form.get('mobile'),
-        contact: form.get('contact'), address: form.get('address'), role: form.get('role'),
+        loginId: form.get('loginId'), name: form.get('name'), mobile: phoneDigits(form.get('mobile')),
+        contact: phoneDigits(form.get('contact')), addressDetail: String(form.get('addressDetail') || '').trim(), role: form.get('role'),
         password: form.get('password'), passwordConfirm: form.get('passwordConfirm'),
         documentName: file.name, document: await fileAsBase64(file),
         terms: form.get('terms') === 'on', privacy: form.get('privacy') === 'on', disclosure: form.get('disclosure') === 'on',
