@@ -52,6 +52,10 @@
       $(`#signupStep${number}`).hidden = number !== step;
       document.querySelector(`[data-step="${number}"]`).classList.toggle('active', number === step);
     });
+    document.querySelectorAll('[data-footer-step]').forEach(actions => {
+      actions.hidden = Number(actions.dataset.footerStep) !== step;
+    });
+    $('.signup-dialog-body').scrollTop = 0;
   }
 
   const phoneDigits = value => String(value || '').replace(/\D/g, '');
@@ -162,6 +166,7 @@
     $('#emailStartForm').reset();
     $('#emailVerifyForm').reset();
     $('#emailVerifyForm').hidden = true;
+    $('#verifyEmailCode').hidden = true;
     $('#signupForm').reset();
     $('#signupMobile').setCustomValidity('');
     $('#signupContact').setCustomValidity('');
@@ -223,6 +228,7 @@
         method: 'POST', body: JSON.stringify({ email: signupEmail, purpose: 'committee-signup' }),
       });
       $('#emailVerifyForm').hidden = false;
+      $('#verifyEmailCode').hidden = false;
       setMessage($('#signupEmailMessage'), data.message, true);
       $('#signupEmailCode').focus();
     } catch (error) { setMessage($('#signupEmailMessage'), error.message); }
@@ -257,7 +263,7 @@
     if (!(file instanceof File) || !file.size) { setMessage($('#signupMessage'), '사업자등록증을 첨부해 주세요.'); return; }
     if (file.size > 10 * 1024 * 1024) { setMessage($('#signupMessage'), '첨부 파일은 10MB 이하여야 합니다.'); return; }
     if (form.get('password') !== form.get('passwordConfirm')) { setMessage($('#signupMessage'), '비밀번호 확인이 일치하지 않습니다.'); return; }
-    const button = event.currentTarget.querySelector('button[type="submit"]');
+    const button = $('#submitSignup');
     button.disabled = true;
     try {
       const body = {

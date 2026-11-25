@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>MuteLab 층간소음관리위원회</title>
   <link rel="stylesheet" href="/committee/styles.css">
-  <link rel="stylesheet" href="/committee/state.css?v=20261125-signup-address">
+  <link rel="stylesheet" href="/committee/state.css?v=20261125-modal-scroll">
   <link rel="stylesheet" href="/committee/integrity.css">
 </head>
 <body>
@@ -109,21 +109,23 @@
     </section>
   </main>
 
-  <dialog id="signupDialog" class="signup-dialog">
-    <form method="dialog" class="dialog-head"><div><p class="eyebrow">COMMITTEE JOIN</p><h2>위원회 회원가입</h2></div><button class="close" value="cancel" aria-label="닫기">×</button></form>
-    <div class="steps" aria-label="가입 단계"><span data-step="1" class="active">단지 선택</span><span data-step="2">이메일 인증</span><span data-step="3">회원정보</span></div>
+  <dialog id="signupDialog" class="signup-dialog" aria-labelledby="signupDialogTitle">
+    <header class="signup-dialog-header">
+      <form method="dialog" class="dialog-head"><div><p class="eyebrow">COMMITTEE JOIN</p><h2 id="signupDialogTitle">위원회 회원가입</h2></div><button class="close" value="cancel" aria-label="닫기">×</button></form>
+      <div class="steps" aria-label="가입 단계"><span data-step="1" class="active">단지 선택</span><span data-step="2">이메일 인증</span><span data-step="3">회원정보</span></div>
+    </header>
+    <div class="signup-dialog-body">
     <section id="signupStep1" class="signup-step">
       <h3>소속 단지를 선택해 주세요</h3>
       <p class="muted">모바일 앱의 관리주체 선택과 같은 등록 단지 정보를 사용합니다.</p>
       <form id="apartmentForm" class="search-line"><label class="grow">단지명<input id="apartmentQuery" minlength="2" required placeholder="두 글자 이상 입력"></label><button class="primary compact" type="submit">검색</button></form>
       <div id="apartmentResults" class="result-list" role="listbox" aria-label="단지 검색 결과"></div>
-      <button id="toEmailStep" class="primary wide" type="button" disabled>선택한 단지로 계속</button>
     </section>
     <section id="signupStep2" class="signup-step" hidden>
       <h3>이메일을 인증해 주세요</h3>
       <p id="selectedApartmentText" class="selected-summary"></p>
-      <form id="emailStartForm" class="form-stack"><label>이메일<input id="signupEmail" type="email" autocomplete="email" required maxlength="254"></label><button class="secondary" type="submit">인증코드 받기</button></form>
-      <form id="emailVerifyForm" class="form-stack" hidden><label>6자리 인증코드<input id="signupEmailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label><button class="primary" type="submit">이메일 인증 완료</button></form>
+      <form id="emailStartForm" class="form-stack"><label>이메일<input id="signupEmail" type="email" autocomplete="email" required maxlength="254"></label></form>
+      <form id="emailVerifyForm" class="form-stack" hidden><label>6자리 인증코드<input id="signupEmailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label></form>
       <p id="signupEmailMessage" class="message" role="status" aria-live="polite"></p>
     </section>
     <section id="signupStep3" class="signup-step" hidden>
@@ -158,11 +160,23 @@
           <div class="disclosure-box"><strong>필수 공개 동의</strong><p>위원의 이름과 모바일폰은 해당 단지의 층간소음 신청자에게 공개됩니다.</p></div>
           <label class="check-label"><input name="disclosure" type="checkbox" required>이름과 모바일폰은 층간소음 신청자에게 공개되는 것에 동의합니다.</label>
         </div>
-        <button class="primary full" type="submit">가입 승인 신청</button>
       </form>
-      <p id="signupMessage" class="message full" role="status" aria-live="polite"></p>
     </section>
+    </div>
+    <footer class="signup-dialog-footer">
+      <p id="signupMessage" class="message" role="status" aria-live="polite"></p>
+      <div class="footer-step-actions" data-footer-step="1">
+        <button id="toEmailStep" class="primary" type="button" disabled>선택한 단지로 계속</button>
+      </div>
+      <div class="footer-step-actions" data-footer-step="2" hidden>
+        <button id="requestEmailCode" class="secondary" type="submit" form="emailStartForm">인증코드 받기</button>
+        <button id="verifyEmailCode" class="primary" type="submit" form="emailVerifyForm" hidden>이메일 인증 완료</button>
+      </div>
+      <div class="footer-step-actions" data-footer-step="3" hidden>
+        <button id="submitSignup" class="primary" type="submit" form="signupForm">가입 승인 신청</button>
+      </div>
+    </footer>
   </dialog>
-  <script src="/committee/app.js?v=20261125-signup-address" defer></script>
+  <script src="/committee/app.js?v=20261125-modal-scroll" defer></script>
 </body>
 </html>
