@@ -95,8 +95,11 @@ public class MainActivity extends Activity {
     private String pendingFormDownloadId="";
     private static final int REQUEST_REPORT_EXPORT=73;
     private boolean notificationsChecked;
+    private boolean committeeReportSyncRunning;
+    private boolean authenticationExpiryHandled;
+    private static final String COMMITTEE_SYNC_PREFIX="committee_submission_sync_";
 
-    @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);if(!getPreferences(0).getBoolean("auto_login",true))getPreferences(0).edit().remove("auth_token").remove("auth_login_id").remove("auth_email").apply();render();}
+    @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);if(!getPreferences(0).getBoolean("auto_login",true))getPreferences(0).edit().remove("auth_token").remove("auth_login_id").remove("auth_email").apply();render();if(!getPreferences(0).getString("auth_token","").isEmpty())handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);}
     @Override protected void onResume(){super.onResume();handler.postDelayed(()->{notificationsChecked=false;checkResidentNotifications();},700);}
     @Override public void onBackPressed(){if(!"홈".equals(page)){page="홈";render();}else super.onBackPressed();}
     private int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+.5f);}
@@ -321,15 +324,22 @@ public class MainActivity extends Activity {
     private String apiBaseUrl(){String value=getPreferences(0).getString("api_base_url",DEFAULT_API_BASE_URL).trim();while(value.endsWith("/"))value=value.substring(0,value.length()-1);return value;}
     private void apiRequest(String method,String path,JSONObject payload,boolean authenticated,ApiCallback callback){
         final String base=apiBaseUrl(),token=getPreferences(0).getString("auth_token","");
-        API_EXECUTOR.execute(()->{HttpURLConnection connection=null;JSONObject result=null;String error=null;try{
+        API_EXECUTOR.execute(()->{HttpURLConnection connection=null;JSONObject result=null;String error=null;int responseStatus=-1;try{
             connection=(HttpURLConnection)new URL(base+path).openConnection();connection.setRequestMethod(method);connection.setConnectTimeout(8000);connection.setReadTimeout(12000);connection.setRequestProperty("Accept","application/json");
             if(authenticated&&!token.isEmpty())connection.setRequestProperty("Authorization","Bearer "+token);
             if(payload!=null){connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json; charset=UTF-8");byte[] bytes=payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);connection.getOutputStream().write(bytes);}
-            int status=connection.getResponseCode();InputStream stream=status>=200&&status<300?connection.getInputStream():connection.getErrorStream();ByteArrayOutputStream buffer=new ByteArrayOutputStream();if(stream!=null){byte[] chunk=new byte[4096];int count;while((count=stream.read(chunk))!=-1)buffer.write(chunk,0,count);stream.close();}
+            int status=connection.getResponseCode();responseStatus=status;InputStream stream=status>=200&&status<300?connection.getInputStream():connection.getErrorStream();ByteArrayOutputStream buffer=new ByteArrayOutputStream();if(stream!=null){byte[] chunk=new byte[4096];int count;while((count=stream.read(chunk))!=-1)buffer.write(chunk,0,count);stream.close();}
             String response=buffer.toString("UTF-8");result=response.isEmpty()?new JSONObject():new JSONObject(response);if(status<200||status>=300)error=result.optString("error","서버 요청을 처리하지 못했습니다.");
         }catch(Exception ex){error="서버에 연결할 수 없습니다. 노트북과 휴대폰이 같은 Wi-Fi에 연결되어 있는지, API 주소와 서버 실행 상태를 확인해 주세요.";}finally{if(connection!=null)connection.disconnect();}
-            final JSONObject data=result;final String message=error;runOnUiThread(()->callback.onResult(data,message));
+            final JSONObject data=result;final String message=error;final int status=responseStatus;runOnUiThread(()->{if(authenticated&&status==401)handleExpiredSession();callback.onResult(data,message);});
         });
+    }
+    private void handleExpiredSession(){
+        if(authenticationExpiryHandled)return;
+        authenticationExpiryHandled=true;committeeReportSyncRunning=false;notificationsChecked=false;
+        getPreferences(0).edit().remove("auth_token").apply();
+        page="계정";render();
+        showMessageDialog("로그인 만료","로그인 시간이 만료되었습니다. 다시 로그인하면 위원회 제출 대기 보고서를 자동으로 전송합니다.",false);
     }
     private JSONObject json(Object... pairs){JSONObject value=new JSONObject();try{for(int i=0;i+1<pairs.length;i+=2)value.put(String.valueOf(pairs[i]),pairs[i+1]);}catch(Exception ignored){}return value;}
     private void checkResidentNotifications(){
@@ -415,7 +425,7 @@ public class MainActivity extends Activity {
         title("계정","이메일을 인증해 회원가입하고 로그인합니다.");
         LinearLayout server=column();server.addView(text("API 서버 주소",13,INK,true));EditText url=input("http://172.30.1.14:3100/api",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);url.setSingleLine(true);url.setText(apiBaseUrl());server.addView(url);gap(server,5);server.addView(button("서버 주소 저장",false,()->{String value=url.getText().toString().trim();if(!value.startsWith("http://")&&!value.startsWith("https://")){url.setError("http:// 또는 https:// 주소를 입력해 주세요.");return;}getPreferences(0).edit().putString("api_base_url",value).apply();showMessageDialog("서버 주소 저장","API 주소를 이 기기에 저장했습니다.",true);}));card(body,server);gap(body,5);
         String token=getPreferences(0).getString("auth_token","");
-        if(token.isEmpty()){LinearLayout login=column();login.addView(text("로그인",18,INK,true));gap(login,5);EditText id=authInput(login,"아이디","아이디",InputType.TYPE_CLASS_TEXT);EditText password=authInput(login,"비밀번호","비밀번호",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);CheckBox autoLogin=new CheckBox(this);autoLogin.setText("자동 로그인");autoLogin.setTextSize(14);autoLogin.setTextColor(INK);autoLogin.setChecked(getPreferences(0).getBoolean("auto_login",true));autoLogin.setOnCheckedChangeListener((v,checked)->getPreferences(0).edit().putBoolean("auto_login",checked).apply());login.addView(autoLogin);gap(login,8);login.addView(button("로그인",true,()->{String loginId=id.getText().toString().trim(),pw=password.getText().toString();apiRequest("POST","/auth/login",json("loginId",loginId,"password",pw),false,(data,error)->{if(error!=null){showMessageDialog("로그인 실패",error,false);return;}getPreferences(0).edit().putBoolean("auto_login",autoLogin.isChecked()).putString("auth_token",data.optString("token","")).putString("auth_login_id",data.optString("loginId",loginId)).putString("auth_email",data.optString("email","")).apply();JSONObject profile=data.optJSONObject("profile");saveServerProfile(profile);syncPendingRecordings();notificationsChecked=false;handler.postDelayed(this::checkResidentNotifications,500);page="내 정보";render();});}));gap(login,5);LinearLayout actions=row();actions.addView(button("회원가입",false,()->{page="회원가입";render();}),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("아이디 찾기",false,()->{page="아이디 찾기";render();}),new LinearLayout.LayoutParams(0,-2,1));login.addView(actions);gap(login,4);login.addView(button("비밀번호를 잊으셨나요?",false,()->{page="비밀번호 재설정";render();}));card(body,login);}
+        if(token.isEmpty()){LinearLayout login=column();login.addView(text("로그인",18,INK,true));gap(login,5);EditText id=authInput(login,"아이디","아이디",InputType.TYPE_CLASS_TEXT);EditText password=authInput(login,"비밀번호","비밀번호",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);CheckBox autoLogin=new CheckBox(this);autoLogin.setText("자동 로그인");autoLogin.setTextSize(14);autoLogin.setTextColor(INK);autoLogin.setChecked(getPreferences(0).getBoolean("auto_login",true));autoLogin.setOnCheckedChangeListener((v,checked)->getPreferences(0).edit().putBoolean("auto_login",checked).apply());login.addView(autoLogin);gap(login,8);login.addView(button("로그인",true,()->{String loginId=id.getText().toString().trim(),pw=password.getText().toString();apiRequest("POST","/auth/login",json("loginId",loginId,"password",pw),false,(data,error)->{if(error!=null){showMessageDialog("로그인 실패",error,false);return;}getPreferences(0).edit().putBoolean("auto_login",autoLogin.isChecked()).putString("auth_token",data.optString("token","")).putString("auth_login_id",data.optString("loginId",loginId)).putString("auth_email",data.optString("email","")).apply();JSONObject profile=data.optJSONObject("profile");saveServerProfile(profile);syncPendingRecordings();handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);notificationsChecked=false;handler.postDelayed(this::checkResidentNotifications,500);page="내 정보";render();});}));gap(login,5);LinearLayout actions=row();actions.addView(button("회원가입",false,()->{page="회원가입";render();}),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("아이디 찾기",false,()->{page="아이디 찾기";render();}),new LinearLayout.LayoutParams(0,-2,1));login.addView(actions);gap(login,4);login.addView(button("비밀번호를 잊으셨나요?",false,()->{page="비밀번호 재설정";render();}));card(body,login);}
         else{LinearLayout profile=column();profile.addView(text("로그인되어 있습니다",18,INK,true));gap(profile,8);profile.addView(text("아이디: "+getPreferences(0).getString("auth_login_id",""),14,MUTED,false));profile.addView(text("이메일: "+getPreferences(0).getString("auth_email",""),14,MUTED,false));gap(profile,8);profile.addView(button("내 정보 입력 / 수정",true,()->{page="내 정보";render();}));gap(profile,5);profile.addView(button("로그아웃",false,()->logout()));card(body,profile);}
     }
     private void logout(){notificationsChecked=false;getPreferences(0).edit().putBoolean("auto_login",false).remove("auth_token").remove("auth_login_id").remove("auth_email").remove("signup_verify_token").remove("recovery_verify_token").apply();page="계정";render();}
@@ -759,7 +769,8 @@ public class MainActivity extends Activity {
         if (record[R_RECORD_NO].isEmpty()) registerRecording(record, () -> editRecord(id));
         else editRecord(id);
     }
-    private void saveIncidentJournal(String[] d){JSONObject journal=new JSONObject();try{journal.put("recordNo",d[R_RECORD_NO]);journal.put("startedAt",date(Long.parseLong(d[2])));journal.put("endedAt",date(Long.parseLong(d[3])));journal.put("kind",d[4]);journal.put("place",d[5]);journal.put("impact",d[6]);journal.put("withinNoiseScope","1".equals(d[7]));journal.put("tag",d[R_TAG]);journal.put("memberName",getPreferences(0).getString("profile_name",""));journal.put("address",getPreferences(0).getString("profile_address",""));}catch(Exception ignored){}apiRequest("PUT","/recordings/"+d[R_RECORD_NO]+"/journal",json("journal",journal),true,(data,error)->{if(error!=null){showMessageDialog("발생 일지 저장 실패",error,false);return;}if("pending".equals(d[R_REPORT_STATE]))verifyAndCreateReport(d);else if(isIncludedInReport(d))submitCommitteeIncident(d,d[R_AUDIO_HASH],(submitted,submitError)->{if(submitError!=null)showMessageDialog("위원회 반영 실패",submitError,false);else showMessageDialog("저장 완료","발생 일지와 위원회 제출 내용을 갱신했습니다.",true);});else showMessageDialog("저장 완료","녹음 원본과 연결된 발생 일지를 서버에 암호화해 저장했습니다.",true);});}
+    private JSONObject incidentJournal(String[] d){JSONObject journal=new JSONObject();try{journal.put("recordNo",d[R_RECORD_NO]);journal.put("startedAt",date(Long.parseLong(d[2])));journal.put("endedAt",date(Long.parseLong(d[3])));journal.put("kind",d[4]);journal.put("place",d[5]);journal.put("impact",d[6]);journal.put("withinNoiseScope","1".equals(d[7]));journal.put("tag",d[R_TAG]);journal.put("memberName",getPreferences(0).getString("profile_name",""));journal.put("address",getPreferences(0).getString("profile_address",""));}catch(Exception ignored){}return journal;}
+    private void saveIncidentJournal(String[] d){apiRequest("PUT","/recordings/"+d[R_RECORD_NO]+"/journal",json("journal",incidentJournal(d)),true,(data,error)->{if(error!=null){showMessageDialog("발생 일지 저장 실패",error,false);return;}if("pending".equals(d[R_REPORT_STATE]))verifyAndCreateReport(d);else if(isIncludedInReport(d))submitCommitteeIncident(d,d[R_AUDIO_HASH],(submitted,submitError)->{if(submitError!=null)showMessageDialog("위원회 반영 실패",submitError,false);else{markCommitteeSubmissionSynced(d);showMessageDialog("저장 완료","발생 일지와 위원회 제출 내용을 갱신했습니다.",true);}});else showMessageDialog("저장 완료","녹음 원본과 연결된 발생 일지를 서버에 암호화해 저장했습니다.",true);});}
     private JSONObject committeeDetails(String[] record){JSONObject details=new JSONObject();try{details.put("minDb",record[R_LOW_DB]);details.put("maxDb",record[R_PEAK_DB]);details.put("latitude",record[R_LAT]);details.put("longitude",record[R_LON]);details.put("ip",record[R_IP]);details.put("otherName",record[R_OTHER_NAME]);details.put("otherDong",record[R_OTHER_DONG]);details.put("otherHo",record[R_OTHER_HO]);details.put("frequency",record[R_FREQUENCY]);}catch(Exception ignored){}return details;}
     private void submitCommitteeIncident(String[] record,String clientSha256,ApiCallback callback){
         if(record==null||record.length<ROW_MIN){callback.onResult(null,"제출할 발생일지 정보를 확인할 수 없습니다.");return;}
@@ -847,6 +858,7 @@ public class MainActivity extends Activity {
                         latest[R_REPORT_STATE] = "reported";
                         latest[R_REPORT_OMITTED] = "";
                         getPreferences(0).edit().putString("record_" + id, packRecord(latest)).apply();
+                        markCommitteeSubmissionSynced(latest);
                         page = "층간소음보고서";
                         render();
                         showMessageDialog("보고서에 추가됨", "원본 검증을 마치고 위원회 발생일지에 제출했습니다.", true);
@@ -861,13 +873,60 @@ public class MainActivity extends Activity {
         return "reported".equals(record[R_REPORT_STATE]) && !"1".equals(record[R_REPORT_OMITTED]);
     }
 
+    private String committeeSubmissionKey(String[] record){return COMMITTEE_SYNC_PREFIX+record[R_RECORD_NO];}
+    private String committeeSubmissionFingerprint(String[] record){
+        StringBuilder material=new StringBuilder();
+        material.append(getPreferences(0).getString("auth_login_id","")).append('\n');
+        for(int i=2;i<record.length;i++)material.append(record[i]==null?"":record[i]).append('\n');
+        for(String key:new String[]{"profile_kapt_code","profile_name","profile_phone","profile_address","profile_address2"})
+            material.append(getPreferences(0).getString(key,"")).append('\n');
+        try{
+            MessageDigest digest=MessageDigest.getInstance("SHA-256");
+            byte[] hash=digest.digest(material.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex=new StringBuilder();for(byte value:hash)hex.append(String.format(Locale.US,"%02X",value));return hex.toString();
+        }catch(Exception ignored){return Integer.toHexString(material.toString().hashCode());}
+    }
+    private boolean isCommitteeSubmissionSynced(String[] record){return isIncludedInReport(record)&&committeeSubmissionFingerprint(record).equals(getPreferences(0).getString(committeeSubmissionKey(record),""));}
+    private void markCommitteeSubmissionSynced(String[] record){if(isIncludedInReport(record))getPreferences(0).edit().putString(committeeSubmissionKey(record),committeeSubmissionFingerprint(record)).apply();}
+    private void clearCommitteeSubmissionSynced(String[] record){getPreferences(0).edit().remove(committeeSubmissionKey(record)).apply();}
+
+    private void syncReportedCommitteeSubmissions(){
+        if(committeeReportSyncRunning||getPreferences(0).getString("auth_token","").isEmpty())return;
+        authenticationExpiryHandled=false;
+        ArrayList<String[]> pending=new ArrayList<>();
+        for(String[] record:reportedIncidents())if(!isCommitteeSubmissionSynced(record)&&record[R_RECORD_NO].matches("[0-9]{8}_[0-9]{4}"))pending.add(record);
+        if(pending.isEmpty())return;
+        committeeReportSyncRunning=true;
+        syncReportedCommitteeSubmission(pending,0,0,0);
+    }
+    private void syncReportedCommitteeSubmission(ArrayList<String[]> pending,int index,int completed,int failed){
+        if(index>=pending.size()){
+            committeeReportSyncRunning=false;
+            if("층간소음보고서".equals(page))render();
+            if(completed>0)Toast.makeText(this,"위원회 발생일지 동기화 완료 · "+completed+"건",Toast.LENGTH_LONG).show();
+            if(failed>0)Toast.makeText(this,"위원회 제출 대기 · "+failed+"건 (내 정보와 네트워크를 확인해 주세요)",Toast.LENGTH_LONG).show();
+            return;
+        }
+        String[] candidate=pending.get(index),record=readRecording(candidate[0]);
+        if(record.length<ROW_MIN||!isIncludedInReport(record)||isCommitteeSubmissionSynced(record)){
+            syncReportedCommitteeSubmission(pending,index+1,completed,failed);return;
+        }
+        apiRequest("PUT","/recordings/"+record[R_RECORD_NO]+"/journal",json("journal",incidentJournal(record)),true,(journalResult,journalError)->{
+            if(journalError!=null){syncReportedCommitteeSubmission(pending,index+1,completed,failed+1);return;}
+            submitCommitteeIncident(record,record[R_AUDIO_HASH],(submitted,submitError)->{
+                if(submitError==null){markCommitteeSubmissionSynced(record);syncReportedCommitteeSubmission(pending,index+1,completed+1,failed);}
+                else syncReportedCommitteeSubmission(pending,index+1,completed,failed+1);
+            });
+        });
+    }
+
     private void setReportOmitted(String id, boolean omitted) {
         String[] record = readRecording(id);
         if (record.length < ROW_MIN || !"reported".equals(record[R_REPORT_STATE])) return;
         if(omitted)apiRequest("DELETE","/recordings/"+record[R_RECORD_NO]+"/committee-submission",null,true,(data,error)->{if(error!=null){showMessageDialog("제출 철회 실패",error,false);return;}finishReportOmitted(record,true);});
         else submitCommitteeIncident(record,record[R_AUDIO_HASH],(data,error)->{if(error!=null){showMessageDialog("다시 제출하지 못했습니다",error,false);return;}finishReportOmitted(record,false);});
     }
-    private void finishReportOmitted(String[] record,boolean omitted){record[R_REPORT_OMITTED]=omitted?"1":"";getPreferences(0).edit().putString("record_"+record[0],packRecord(record)).apply();render();Toast.makeText(this,omitted?"위원회 제출을 철회했습니다.":"위원회에 다시 제출했습니다.",Toast.LENGTH_SHORT).show();}
+    private void finishReportOmitted(String[] record,boolean omitted){record[R_REPORT_OMITTED]=omitted?"1":"";getPreferences(0).edit().putString("record_"+record[0],packRecord(record)).apply();if(omitted)clearCommitteeSubmissionSynced(record);else markCommitteeSubmissionSynced(record);render();Toast.makeText(this,omitted?"위원회 제출을 철회했습니다.":"위원회에 다시 제출했습니다.",Toast.LENGTH_SHORT).show();}
 
     private void toggleIncidentReport(String id) {
         String[] record = readRecording(id);
@@ -898,6 +957,7 @@ public class MainActivity extends Activity {
             report.addView(text("소음기록에서 ‘층간소음으로 보고’를 선택하면 원본 검증 후 이 보고서에 추가됩니다.", 13, MUTED, false));
         } else {
             report.addView(text("층간소음 발생 일지 · " + entries.size() + "건", 17, INK, true));
+            boolean hasPendingSubmission=false;
             for (String[] entry : entries) {
                 gap(report, 10);
                 View divider = new View(this);
@@ -906,6 +966,9 @@ public class MainActivity extends Activity {
                 gap(report, 9);
                 report.addView(text(reportPeriod(entry) + " · " + entry[4], 13, INK, true));
                 report.addView(text("소음측정 일련번호 " + entry[R_RECORD_NO], 12, BLUE, true));
+                boolean synced=isCommitteeSubmissionSynced(entry);
+                report.addView(text(synced?"위원회 제출 완료":"위원회 제출 동기화 대기",12,synced?GREEN:Color.rgb(168,76,67),true));
+                if(!synced)hasPendingSubmission=true;
                 if (!entry[5].isEmpty()) report.addView(text("발생 추정 장소 · " + entry[5], 13, MUTED, false));
                 if (!entry[6].isEmpty()) report.addView(text("피해 상황 · " + entry[6], 13, MUTED, false));
                 gap(report, 6);
@@ -915,10 +978,12 @@ public class MainActivity extends Activity {
             report.addView(button("▤", "통합 보고서 PDF 내보내기", true, this::exportIncidentReport));
             gap(report, 6);
             report.addView(button("위원회 연락처 확인", false, this::showCommitteeContacts));
+            if(hasPendingSubmission){gap(report,6);report.addView(button("위원회 제출 다시 동기화",false,this::syncReportedCommitteeSubmissions));}
         }
         card(body, report);
         gap(body, 8);
         body.addView(button("기록으로 돌아가기", false, () -> { page = "소음기록"; render(); }));
+        handler.post(this::syncReportedCommitteeSubmissions);
     }
 
     private void showCommitteeContacts(){apiRequest("GET","/committee-contacts",null,true,(data,error)->{if(error!=null){showMessageDialog("위원회 연락처",error,false);return;}JSONArray members=data.optJSONArray("members");LinearLayout content=column();if(members==null||members.length()==0){content.addView(text("제출한 단지의 위원회 연락처가 아직 등록되지 않았습니다.",14,MUTED,false));}else for(int i=0;i<members.length();i++){JSONObject member=members.optJSONObject(i);if(member==null)continue;if(i>0){gap(content,8);View divider=new View(this);divider.setBackgroundColor(BORDER);content.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));gap(content,8);}content.addView(text(member.optString("role")+" · "+member.optString("name"),15,INK,true));content.addView(text(member.optString("mobile"),14,BLUE,false));}showCustomDialog("위원회 연락처",content,null,"닫기",false,null,null);});}
@@ -1602,7 +1667,7 @@ public class MainActivity extends Activity {
         card(body,f);body.addView(button("✓","정보 저장",true,()->{if(!terms.isChecked()||!privacy.isChecked()){Toast.makeText(this,"이용약관과 개인정보 이용 안내를 확인하고 동의해 주세요.",Toast.LENGTH_LONG).show();return;}String residentName=getFieldValue(f,"profile_name").trim(),residentEmail=getFieldValue(f,"profile_email").trim(),residentPhone=getFieldValue(f,"profile_phone").trim();
         String addr1=address1.getText().toString().trim(),addr2=getFieldValue(f,"profile_address2").trim();String residentAddress=addr1.isEmpty()?(addr2.isEmpty()?"":addr2):(addr2.isEmpty()?addr1:addr1+" "+addr2);
         if(residentName.isEmpty()||residentEmail.isEmpty()||residentPhone.isEmpty()){Toast.makeText(this,"별표(*)가 표시된 필수 항목을 입력해 주세요.",Toast.LENGTH_LONG).show();return;}
-        if(residentAddress.isEmpty()){Toast.makeText(this,"주소검색으로 주소를 지정하거나 상세주소(주소2)를 입력해 주세요.",Toast.LENGTH_LONG).show();return;}if(!validEmail(residentEmail)){EditText e=findField(f,"profile_email");if(e!=null){e.setError("이메일 주소 형식을 확인해 주세요.");e.requestFocus();}return;}if(!validManagerPhone(residentPhone)){EditText e=findField(f,"profile_phone");if(e!=null){e.setError("전화번호 형식을 확인해 주세요. 예: 010-1234-5678");e.requestFocus();}return;}String phone=managerPhone.getText().toString().trim(),mail=managerEmail.getText().toString().trim();if(has.isChecked()&&selectedKaptCode[0].isEmpty()){showMessageDialog("공동주택 선택","검색 결과에서 단지명과 주소를 확인해 공동주택을 선택해 주세요.",false);return;}if(has.isChecked()&&!phone.isEmpty()&&!validManagerPhone(phone)){managerPhone.setError("전화번호 형식을 확인해 주세요. 예: 02-1234-5678");managerPhone.requestFocus();return;}if(has.isChecked()&&!mail.isEmpty()&&!validEmail(mail)){managerEmail.setError("전자우편 주소 형식을 확인해 주세요.");managerEmail.requestFocus();return;}android.content.SharedPreferences.Editor ed=getPreferences(0).edit().putBoolean("profile_manager",has.isChecked()).putBoolean("profile_terms",true).putBoolean("profile_privacy",true).putBoolean("profile_saved",true).putString("profile_address",addr1).putString("profile_postal",postal.getText().toString().trim());for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null){String val=e.getText().toString().trim();if("profile_phone".equals(String.valueOf(e.getTag()))||"profile_manager_phone".equals(String.valueOf(e.getTag())))val=val.replaceAll("[^0-9]","");ed.putString(String.valueOf(e.getTag()),val);}}String kaptCode=has.isChecked()?selectedKaptCode[0]:"";ed.putString("profile_kapt_code",kaptCode);JSONObject profileData=new JSONObject();try{for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null)profileData.put(String.valueOf(e.getTag()),e.getText().toString().trim());}profileData.put("profile_address",addr1);profileData.put("profile_postal",postal.getText().toString().trim());profileData.put("profile_manager",has.isChecked());profileData.put("profile_kapt_code",kaptCode);}catch(Exception ignored){}apiRequest("PUT","/profile",json("profile",profileData),true,(saved,error)->{if(error!=null){showMessageDialog("저장 실패",error,false);return;}ed.apply();showMessageDialog("저장 완료","내 정보와 동의 내역을 회원 계정에 저장했습니다.",true);});}));gap(body,8);body.addView(text("계정 인증과 비밀번호 재설정은 로컬 API에서 처리합니다. 실제 이메일 발송과 계정 탈퇴 기능은 아직 연결되지 않았습니다. 비밀번호 원문은 기기나 데이터베이스에 저장하지 않습니다.",12,MUTED,false));
+        if(residentAddress.isEmpty()){Toast.makeText(this,"주소검색으로 주소를 지정하거나 상세주소(주소2)를 입력해 주세요.",Toast.LENGTH_LONG).show();return;}if(!validEmail(residentEmail)){EditText e=findField(f,"profile_email");if(e!=null){e.setError("이메일 주소 형식을 확인해 주세요.");e.requestFocus();}return;}if(!validManagerPhone(residentPhone)){EditText e=findField(f,"profile_phone");if(e!=null){e.setError("전화번호 형식을 확인해 주세요. 예: 010-1234-5678");e.requestFocus();}return;}String phone=managerPhone.getText().toString().trim(),mail=managerEmail.getText().toString().trim();if(has.isChecked()&&selectedKaptCode[0].isEmpty()){showMessageDialog("공동주택 선택","검색 결과에서 단지명과 주소를 확인해 공동주택을 선택해 주세요.",false);return;}if(has.isChecked()&&!phone.isEmpty()&&!validManagerPhone(phone)){managerPhone.setError("전화번호 형식을 확인해 주세요. 예: 02-1234-5678");managerPhone.requestFocus();return;}if(has.isChecked()&&!mail.isEmpty()&&!validEmail(mail)){managerEmail.setError("전자우편 주소 형식을 확인해 주세요.");managerEmail.requestFocus();return;}android.content.SharedPreferences.Editor ed=getPreferences(0).edit().putBoolean("profile_manager",has.isChecked()).putBoolean("profile_terms",true).putBoolean("profile_privacy",true).putBoolean("profile_saved",true).putString("profile_address",addr1).putString("profile_postal",postal.getText().toString().trim());for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null){String val=e.getText().toString().trim();if("profile_phone".equals(String.valueOf(e.getTag()))||"profile_manager_phone".equals(String.valueOf(e.getTag())))val=val.replaceAll("[^0-9]","");ed.putString(String.valueOf(e.getTag()),val);}}String kaptCode=has.isChecked()?selectedKaptCode[0]:"";ed.putString("profile_kapt_code",kaptCode);JSONObject profileData=new JSONObject();try{for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null)profileData.put(String.valueOf(e.getTag()),e.getText().toString().trim());}profileData.put("profile_address",addr1);profileData.put("profile_postal",postal.getText().toString().trim());profileData.put("profile_manager",has.isChecked());profileData.put("profile_kapt_code",kaptCode);}catch(Exception ignored){}apiRequest("PUT","/profile",json("profile",profileData),true,(saved,error)->{if(error!=null){showMessageDialog("저장 실패",error,false);return;}ed.apply();handler.postDelayed(this::syncReportedCommitteeSubmissions,300);showMessageDialog("저장 완료","내 정보와 동의 내역을 회원 계정에 저장했습니다.",true);});}));gap(body,8);body.addView(text("계정 인증과 비밀번호 재설정은 로컬 API에서 처리합니다. 실제 이메일 발송과 계정 탈퇴 기능은 아직 연결되지 않았습니다. 비밀번호 원문은 기기나 데이터베이스에 저장하지 않습니다.",12,MUTED,false));
     }    private EditText findField(LinearLayout form,String key){for(int i=0;i<form.getChildCount();i++)if(form.getChildAt(i) instanceof EditText){EditText e=(EditText)form.getChildAt(i);if(key.equals(e.getTag()))return e;}return null;}
     private String getFieldValue(LinearLayout form,String key){for(int i=0;i<form.getChildCount();i++)if(form.getChildAt(i) instanceof EditText){EditText e=(EditText)form.getChildAt(i);if(key.equals(e.getTag()))return e.getText().toString();}return "";}
 }
