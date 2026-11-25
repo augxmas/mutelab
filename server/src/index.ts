@@ -11,6 +11,7 @@ import { committeeAuth, initializeCommittee } from './committee-auth';
 import { cleanupCommitteeSubmissionArtifacts, committeeDataRouter, notifyRecordingIntegrityMismatch, readResidentNotification,
   residentCommitteeContacts, residentNotifications, retryPendingNotificationEmail, submitCommitteeIncident,
   uploadCommitteeSubmissionAudio, withdrawCommitteeIncident } from './committee-data';
+import { initializeCommitteeDecisionNotifications, retryPendingCommitteeDecisionEmail } from './committee-decision-notifications';
 
 const host = process.env.HOST ?? '0.0.0.0';
 const port = Number(process.env.PORT ?? 3100);
@@ -506,6 +507,17 @@ app.use('/committee', express.static(committeeDirectory, {
   index: 'index.html', etag: true, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
 }));
 
+const supervisorDirectory = path.resolve(__dirname, '../supervisor');
+const sendSupervisorIndex: express.RequestHandler = (_req, res) => {
+  res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow, noarchive' });
+  res.sendFile(path.join(supervisorDirectory, 'index.html'));
+};
+app.get(['/supervisor', '/supervisor/'], sendSupervisorIndex);
+app.use('/supervisor', express.static(supervisorDirectory, {
+  index: false, etag: true, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+  setHeaders: res => res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive'),
+}));
+
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const httpError = error as { status?: number; type?: string };
   if (httpError?.status === 413) { fail(res, 413, '요청 파일 또는 입력 내용이 허용 크기를 초과했습니다.'); return; }
@@ -517,6 +529,7 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 async function start(): Promise<void> {
   await initializeDatabase();
   await initializeCommittee();
+  await initializeCommitteeDecisionNotifications();
   const cleanupStagedCommitteeAudio = async () => {
     try { await cleanupCommitteeSubmissionArtifacts(); }
     catch (error) { console.error('committee artifact cleanup error:', error instanceof Error ? error.message : error); }
@@ -529,9 +542,16 @@ async function start(): Promise<void> {
     if (notificationEmailWorkerRunning) return;
     notificationEmailWorkerRunning = true;
     try {
-      for (let index = 0; index < 5 && await retryPendingNotificationEmail(emailFrom); index += 1) { /* drain a bounded batch */ }
-    } catch (error) {
-      console.error('notification email worker error:', error instanceof Error ? error.message : error);
+      try {
+        for (let index = 0; index < 5 && await retryPendingNotificationEmail(emailFrom); index += 1) { /* drain a bounded batch */ }
+      } catch (error) {
+        console.error('resident notification email worker error:', error instanceof Error ? error.message : error);
+      }
+      try {
+        for (let index = 0; index < 5 && await retryPendingCommitteeDecisionEmail(emailFrom); index += 1) { /* drain a bounded batch */ }
+      } catch (error) {
+        console.error('committee decision email worker error:', error instanceof Error ? error.message : error);
+      }
     } finally { notificationEmailWorkerRunning = false; }
   };
   void deliverPendingNotificationEmails();

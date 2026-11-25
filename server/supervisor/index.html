@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>MuteLab 위원회 승인 관리</title>
+  <link rel="stylesheet" href="/supervisor/styles.css?v=20261125-supervisor-1">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/supervisor/" aria-label="MuteLab 위원회 승인 관리 홈"><span aria-hidden="true">M</span><strong>MuteLab</strong></a>
+    <div class="topbar-copy"><span>Supervisor</span><strong>위원회 승인 관리</strong></div>
+    <button id="refreshButton" class="button secondary compact" type="button">새로고침</button>
+  </header>
+
+  <main class="workspace">
+    <section class="page-heading" aria-labelledby="pageTitle">
+      <div>
+        <p class="eyebrow">APARTMENT COMMITTEE REVIEW</p>
+        <h1 id="pageTitle">전체 단지와 위원회 가입 현황</h1>
+        <p>등록된 단지를 조회하고 위원회 신청자 정보를 검토한 뒤 승인 또는 반려할 수 있습니다.</p>
+      </div>
+      <div class="privacy-notice"><strong>업무용 개인정보</strong><span>이 화면의 신청자 정보와 서류를 승인 업무 외 목적으로 이용하지 마세요.</span></div>
+    </section>
+
+    <p id="pageMessage" class="message" role="status" aria-live="polite"></p>
+
+    <section class="summary-grid" aria-label="단지 현황 요약">
+      <article class="summary-card"><span>전체 단지</span><strong id="summaryTotal">-</strong></article>
+      <article class="summary-card"><span>가입 정보 있음</span><strong id="summaryRegistered">-</strong></article>
+      <article class="summary-card pending"><span>승인 대기</span><strong id="summaryPending">-</strong></article>
+      <article class="summary-card quiet"><span>미가입</span><strong id="summaryUnregistered">-</strong></article>
+    </section>
+
+    <section class="filter-card" aria-labelledby="filterTitle">
+      <div>
+        <p class="eyebrow" id="filterTitle">조회 조건</p>
+        <h2>단지 검색</h2>
+      </div>
+      <form id="filterForm" class="filters">
+        <label class="grow">단지명·단지코드·주소
+          <input id="queryInput" name="query" type="search" maxlength="100" placeholder="예: 청암자이, A14005001, 용산구">
+        </label>
+        <label>위원회 상태
+          <select id="statusSelect" name="status">
+            <option value="ALL">전체</option>
+            <option value="UNREGISTERED">미가입</option>
+            <option value="PENDING">승인 대기</option>
+            <option value="APPROVED">가입 승인</option>
+            <option value="REJECTED">반려</option>
+          </select>
+        </label>
+        <label>페이지당
+          <select id="pageSizeSelect" name="pageSize">
+            <option value="25">25건</option>
+            <option value="50" selected>50건</option>
+            <option value="100">100건</option>
+          </select>
+        </label>
+        <button class="button primary" type="submit">조회</button>
+      </form>
+    </section>
+
+    <section class="table-card" aria-labelledby="resultTitle">
+      <div class="table-head">
+        <div><p class="eyebrow">COMPLEXES</p><h2 id="resultTitle">단지별 위원회 현황</h2></div>
+        <p id="resultMeta" class="muted" aria-live="polite"></p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">상태</th>
+              <th scope="col">단지명 / 코드</th>
+              <th scope="col">기본주소</th>
+              <th scope="col">승인 대기</th>
+              <th scope="col">승인 위원</th>
+              <th scope="col">최초 신청</th>
+              <th scope="col">상세</th>
+            </tr>
+          </thead>
+          <tbody id="complexRows"></tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty-state" hidden><strong>조회된 단지가 없습니다.</strong><span>검색어나 상태 조건을 변경해 주세요.</span></div>
+      <nav class="pagination" aria-label="단지 목록 페이지">
+        <button id="previousPage" class="button secondary compact" type="button">이전</button>
+        <span id="pageIndicator">1 / 1</span>
+        <button id="nextPage" class="button secondary compact" type="button">다음</button>
+      </nav>
+    </section>
+  </main>
+
+  <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailTitle">
+    <header class="dialog-header">
+      <div><p class="eyebrow">COMMITTEE DETAIL</p><h2 id="detailTitle">단지 위원회 상세</h2><p id="detailAddress" class="muted"></p></div>
+      <button id="closeDetailTop" class="icon-button" type="button" aria-label="상세 닫기">×</button>
+    </header>
+    <div id="detailBody" class="dialog-body">
+      <section class="detail-summary" aria-label="선택 단지 요약">
+        <div><span>단지코드</span><strong id="detailCode">-</strong></div>
+        <div><span>위원회 상태</span><strong id="detailStatus">-</strong></div>
+        <div><span>승인 위원</span><strong id="detailMemberCount">-</strong></div>
+        <div><span>승인 대기</span><strong id="detailPendingCount">-</strong></div>
+      </section>
+
+      <section class="detail-section" aria-labelledby="memberTitle">
+        <div class="section-heading"><div><p class="eyebrow">MEMBERS</p><h3 id="memberTitle">승인된 위원</h3></div><span id="memberCount" class="count-pill">0명</span></div>
+        <div id="memberList" class="person-list"></div>
+        <p id="memberEmpty" class="inline-empty">승인된 위원이 없습니다.</p>
+      </section>
+
+      <section class="detail-section" aria-labelledby="applicationTitle">
+        <div class="section-heading"><div><p class="eyebrow">APPLICATIONS</p><h3 id="applicationTitle">위원 가입 신청</h3></div><span id="applicationCount" class="count-pill">0건</span></div>
+        <p class="section-guide">승인하려면 승인 대기 신청자의 사업자등록증을 모두 열어 확인해야 합니다.</p>
+        <div id="applicationList" class="application-list"></div>
+        <p id="applicationEmpty" class="inline-empty">가입 신청 내역이 없습니다.</p>
+      </section>
+
+      <section id="decisionPanel" class="decision-panel" aria-labelledby="decisionTitle">
+        <div><p class="eyebrow">DECISION</p><h3 id="decisionTitle">대기 신청 전체 결정</h3></div>
+        <p id="approvalGate" class="review-gate" role="status"></p>
+        <label for="decisionReason">검토 메모 / 반려 사유
+          <textarea id="decisionReason" maxlength="1000" rows="4" placeholder="반려할 때에는 사유를 반드시 입력해 주세요."></textarea>
+        </label>
+        <div class="character-count"><span id="reasonCount">0</span> / 1000</div>
+      </section>
+    </div>
+    <footer class="dialog-footer">
+      <p id="detailMessage" class="message" role="status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="closeDetailBottom" class="button secondary" type="button">닫기</button>
+        <button id="rejectButton" class="button danger" type="button">대기 신청 반려</button>
+        <button id="approveButton" class="button primary" type="button">대기 신청 승인</button>
+      </div>
+    </footer>
+  </dialog>
+
+  <script src="/supervisor/app.js?v=20261125-supervisor-1" defer></script>
+</body>
+</html>

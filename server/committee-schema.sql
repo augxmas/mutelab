@@ -525,7 +525,8 @@ BEGIN
     MemberCipher,PasswordHash,ApprovedAt,ConsentedAt,CreatedAt) ON OBJECT::dbo.CommitteeMembers TO MuteLabApiRole;
   REVOKE UPDATE,DELETE ON OBJECT::dbo.CommitteeApplications FROM MuteLabApiRole;
   GRANT INSERT ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
-  GRANT SELECT (ApplicationId,LoginHash,EmailHash,MobileHash,PasswordHash,Status) ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
+  GRANT SELECT (ApplicationId,KaptCode,RequestedRole,LoginHash,EmailHash,MobileHash,PasswordHash,Status,ReviewNote)
+    ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
   DENY EXECUTE ON OBJECT::dbo.GetCommitteeApplicationForReview TO MuteLabApiRole;
   DENY EXECUTE ON OBJECT::dbo.ApproveCommitteeApplication TO MuteLabApiRole;
   DENY EXECUTE ON OBJECT::dbo.RejectCommitteeApplication TO MuteLabApiRole;

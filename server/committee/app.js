@@ -331,11 +331,48 @@
       const title = document.createElement('strong'); title.textContent = me.complex?.kaptName || '위원회';
       const line = document.createElement('span'); line.textContent = `${me.members.length}명 · ${representative}`;
       $('#memberSummary').append(title, line);
-      await loadIncidents();
+      await Promise.all([loadCommitteeNotifications(), loadIncidents()]);
     } catch (error) {
       setMessage($('#dashboardMessage'), error.message);
       if (!token) signOut();
     }
+  }
+
+  async function loadCommitteeNotifications() {
+    const panel = $('#committeeNotifications');
+    const list = $('#committeeNotificationList');
+    const data = await request('/api/committee/notifications');
+    const notifications = Array.isArray(data.notifications)
+      ? data.notifications.filter(notification => !notification.readAt) : [];
+    list.replaceChildren();
+    for (const notification of notifications) {
+      const article = document.createElement('article');
+      article.className = `committee-notification ${notification.decision === 'REJECTED' ? 'rejected' : 'approved'}`;
+      const copy = document.createElement('div');
+      const title = document.createElement('strong'); title.textContent = notification.title || '위원회 처리 결과';
+      const message = document.createElement('p'); message.textContent = notification.message || '';
+      const time = document.createElement('time');
+      const createdAt = new Date(notification.createdAt);
+      time.textContent = Number.isNaN(createdAt.getTime()) ? '' : createdAt.toLocaleString('ko-KR');
+      copy.append(title, message, time);
+      const read = document.createElement('button'); read.type = 'button'; read.className = 'secondary compact'; read.textContent = '확인';
+      read.addEventListener('click', async () => {
+        read.disabled = true;
+        try {
+          await request(`/api/committee/notifications/${encodeURIComponent(notification.notificationId)}/read`, { method: 'POST' });
+          article.remove();
+          const remaining = list.children.length;
+          $('#committeeNotificationCount').textContent = remaining ? `${remaining}건` : '';
+          panel.hidden = remaining === 0;
+        } catch (error) {
+          read.disabled = false;
+          setMessage($('#dashboardMessage'), error.message);
+        }
+      });
+      article.append(copy, read); list.append(article);
+    }
+    $('#committeeNotificationCount').textContent = notifications.length ? `${notifications.length}건` : '';
+    panel.hidden = notifications.length === 0;
   }
 
   function filtersQuery() {

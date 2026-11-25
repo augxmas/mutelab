@@ -118,9 +118,11 @@ export function committeeAuth(options: {
         EXEC @complexLock=sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockOwner='Transaction';
         IF @complexLock<0 THROW 51020,'Committee lock failed.',1;
         IF NOT EXISTS(SELECT 1 FROM dbo.AptComplexWithDetail WHERE kaptCode=@kaptCode) THROW 51021,'Unknown apartment.',1;
-        IF @role=N'위원장' AND EXISTS(SELECT 1 FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode AND Role=N'위원장')
+        IF @role=N'위원장' AND (EXISTS(SELECT 1 FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode AND Role=N'위원장')
+          OR EXISTS(SELECT 1 FROM dbo.CommitteeApplications WHERE KaptCode=@kaptCode AND RequestedRole=N'위원장' AND Status='PENDING'))
           THROW 51024,'Chair already exists.',1;
-        IF (SELECT COUNT_BIG(*) FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode)>=3
+        IF ((SELECT COUNT_BIG(*) FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode)
+          +(SELECT COUNT_BIG(*) FROM dbo.CommitteeApplications WHERE KaptCode=@kaptCode AND Status='PENDING'))>=3
           THROW 51022,'Committee full.',1;
         IF EXISTS(SELECT 1 FROM dbo.CommitteeMembers WHERE LoginHash=${lookup('loginId')}
           OR EmailHash=${lookup('email')} OR MobileHash=${lookup('mobile')})
@@ -168,15 +170,17 @@ export function committeeAuth(options: {
       SELECT MemberId,dbo.DecryptMemberData(EmailCipher,@key) AS Email,PasswordHash,ApprovedAt
       FROM dbo.CommitteeMembers WHERE LoginHash=${lookup('loginId')}`,{loginId,key});
     if (!member) {
-      const [application] = await querySql<{PasswordHash:string;Status:string}>(`
-        SELECT TOP (1) PasswordHash,Status FROM dbo.CommitteeApplications
+      const [application] = await querySql<{PasswordHash:string;Status:string;ReviewNote:string|null}>(`
+        SELECT TOP (1) PasswordHash,Status,ReviewNote FROM dbo.CommitteeApplications
         WHERE LoginHash=${lookup('loginId')} ORDER BY ApplicationId DESC`,{loginId,key});
       if (!application || !await bcrypt.compare(password,application.PasswordHash))
         return res.status(401).json({error:'아이디 또는 비밀번호가 올바르지 않습니다.'});
       if (application.Status === 'PENDING')
         return res.status(403).json({error:'사업자등록증과 단지 소속 확인이 진행 중입니다. 승인 후 로그인할 수 있습니다.'});
       if (application.Status === 'REJECTED')
-        return res.status(403).json({error:'위원회 가입 신청이 승인되지 않았습니다. 운영자에게 확인해 주세요.'});
+        return res.status(403).json({error: application.ReviewNote?.trim()
+          ? `위원회 가입 신청이 반려되었습니다. 사유: ${application.ReviewNote.trim()}`
+          : '위원회 가입 신청이 반려되었습니다. 자세한 내용은 안내 이메일을 확인해 주세요.'});
       return res.status(403).json({error:'위원회 계정 상태를 확인해 주세요.'});
     }
     if (!await bcrypt.compare(password,member.PasswordHash)) return res.status(401).json({error:'아이디 또는 비밀번호가 올바르지 않습니다.'});

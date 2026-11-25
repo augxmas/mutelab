@@ -46,6 +46,14 @@ Run review from a separate back-office OS account and environment. Give every hu
 
 Example role assignment, performed by a DBA after creating each reviewer-specific database user: `ALTER ROLE MuteLabCommitteeApproverRole ADD MEMBER [reviewer_specific_user];`
 
+### Supervisor portal
+
+`/supervisor` groups all collected apartment complexes by committee status and lets an operator review the pending applicants for one complex as a single atomic decision. Apply `supervisor-schema.sql` with a database administrator after `committee-schema.sql`, then run `npm run build`. The main API serves only the static page and committee notification/email worker; it remains denied access to the approval procedures.
+
+Run `npm run start:supervisor` as a separate OS service with `COMMITTEE_APPROVER_DB_USER`, `COMMITTEE_APPROVER_DB_PASSWORD`, `MEMBER_DATA_KEY`, `SQL_SERVER`, `SQL_PORT`, `SQL_DATABASE`, `SUPERVISOR_HOST=127.0.0.1`, `SUPERVISOR_PORT=3102`, and the public HTTPS `SUPERVISOR_ORIGIN`. Reverse-proxy only `/api/supervisor/` to that loopback service. The page intentionally has no operator login; its short-lived same-origin browser token, rate limits, no-store responses, and audit log reduce accidental or cross-site misuse but do not identify or authorize a person. Deploy it only where that access model is explicitly accepted, or add an upstream IP/VPN/authentication control before exposing it more broadly.
+
+Approval requires every pending business-registration document to be opened and hash-verified in the same browser session. Approval or rejection, the required rejection reason, audit record, in-app notification, and email outbox are committed together. Decision emails use the main API's retry worker. Approved committee members see unread results in `/committee`; rejected applicants receive email, receive a resident-app notification when their email matches an app account, and can see the reason only after their committee login ID and password are verified.
+
 ## API
 
 - `POST /api/auth/email/start` — request a code for `signup`, `find-id`, `reset-password`, or `committee-signup`.
@@ -59,4 +67,5 @@ Example role assignment, performed by a DBA after creating each reviewer-specifi
 - `GET /api/notifications`, `POST /api/notifications/:notificationId/read` — retrieve and acknowledge resident integrity alerts.
 - `GET /api/committee-contacts` — names and mobile numbers of committee members, available only after the signed-in resident has submitted an occurrence to that complex.
 - `/api/committee/*` — committee signup, two-factor login, journal search, audio detail, and PDF export APIs used by `/committee`.
+- `/api/supervisor/*` — short-lived browser session, apartment status listing, committee review details, document inspection, and atomic complex decisions used by `/supervisor`; served by the dedicated supervisor process.
 

@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>MuteLab 층간소음관리위원회</title>
   <link rel="stylesheet" href="/committee/styles.css">
-  <link rel="stylesheet" href="/committee/state.css?v=20261125-modal-scroll">
+  <link rel="stylesheet" href="/committee/state.css?v=20261125-supervisor-notice">
   <link rel="stylesheet" href="/committee/integrity.css">
 </head>
 <body>
@@ -68,6 +68,14 @@
           <button id="downloadSelected" class="primary compact" type="button" disabled>다운로드</button>
         </div>
       </header>
+
+      <section id="committeeNotifications" class="committee-notifications" aria-labelledby="committeeNotificationTitle" hidden>
+        <div class="committee-notification-head">
+          <div><p class="eyebrow">NOTIFICATIONS</p><h2 id="committeeNotificationTitle">위원회 알림</h2></div>
+          <span id="committeeNotificationCount" class="notification-count"></span>
+        </div>
+        <div id="committeeNotificationList" class="committee-notification-list"></div>
+      </section>
 
       <form id="filters" class="filter-card">
         <fieldset>
@@ -177,6 +185,6 @@
       </div>
     </footer>
   </dialog>
-  <script src="/committee/app.js?v=20261125-modal-scroll" defer></script>
+  <script src="/committee/app.js?v=20261125-supervisor-notice" defer></script>
 </body>
 </html>

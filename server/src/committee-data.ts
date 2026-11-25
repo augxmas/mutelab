@@ -5,6 +5,7 @@ import { committeeAccess, field } from './committee-auth';
 import { memberDataKey, querySql } from './db';
 import { createIncidentPdf } from './committee-pdf';
 import { sendNotificationEmail } from './verification-email';
+import { committeeDecisionNotifications, readCommitteeDecisionNotification } from './committee-decision-notifications';
 
 type JsonObject = Record<string, unknown>;
 type ResidentRequest = Request & { user?: { sub: string } };
@@ -661,6 +662,9 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
     res.json({ complex, members: mapped, current: mapped.find(member => member.memberId === res.locals.memberId) ?? null,
       representative: mapped.find(member => member.role === '위원장') ?? null });
   });
+
+  router.get('/notifications', committeeDecisionNotifications);
+  router.post('/notifications/:notificationId/read', readCommitteeDecisionNotification);
 
   router.get('/incidents', async (req, res) => {
     const filterKeys = ['applicantName', 'applicantDong', 'applicantHo', 'otherName', 'otherDong', 'otherHo'] as const;
