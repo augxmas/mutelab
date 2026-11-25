@@ -31,9 +31,7 @@ export async function initializeCommittee() {
       AND COL_LENGTH(N'dbo.ResidentNotifications',N'EmailNextAttemptAt') IS NOT NULL
       AND COL_LENGTH(N'dbo.ResidentNotifications',N'RelatedArtifactId') IS NOT NULL
       AND COL_LENGTH(N'dbo.CommitteeIntegrityEvents',N'OriginalObservedAudioSha256') IS NOT NULL
-      AND OBJECT_ID(N'dbo.GetCommitteeApplicationForReview',N'P') IS NOT NULL
-      AND OBJECT_ID(N'dbo.ApproveCommitteeApplication',N'P') IS NOT NULL
-      AND OBJECT_ID(N'dbo.RejectCommitteeApplication',N'P') IS NOT NULL
+      /* Back-office review procedures intentionally deny API execution and metadata visibility. */
       AND DATABASE_PRINCIPAL_ID(N'MuteLabCommitteeApproverRole') IS NOT NULL
       AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'dbo.TR_NoiseRecordings_InsertOnly') AND is_disabled=0)
       AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'dbo.TR_NoiseRecordings_ValidateInsert') AND is_disabled=0)
