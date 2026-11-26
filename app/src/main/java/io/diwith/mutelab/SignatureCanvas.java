@@ -29,6 +29,10 @@ class SignatureCanvas extends View {
 
     @Override protected void onDraw(Canvas canvas){
         super.onDraw(canvas);
+        drawInk(canvas);
+    }
+
+    private void drawInk(Canvas canvas){
         for (float[] s : strokes) drawStroke(canvas, s);
         if (current != null) drawStroke(canvas, current);
     }
@@ -59,10 +63,16 @@ class SignatureCanvas extends View {
                     current = null;
                     invalidate();
                 }
+                if (e.getAction() == MotionEvent.ACTION_UP) performClick();
                 return true;
             default:
                 return false;
         }
+    }
+
+    @Override public boolean performClick(){
+        super.performClick();
+        return true;
     }
 
     boolean hasInk(){
@@ -79,7 +89,7 @@ class SignatureCanvas extends View {
         int w = Math.max(1, getWidth());
         int h = Math.max(1, getHeight());
         Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        onDraw(new Canvas(b));
+        drawInk(new Canvas(b));
         return b;
     }
 }

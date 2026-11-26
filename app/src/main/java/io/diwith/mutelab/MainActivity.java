@@ -3,6 +3,7 @@ package io.diwith.mutelab;
 import android.Manifest;
 import android.app.*;
 import android.content.*;
+import android.content.res.ColorStateList;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Canvas;
@@ -37,6 +38,25 @@ import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.TranslateAnimation;
 import android.widget.*;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.widget.TooltipCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.checkbox.MaterialCheckBox;
+import com.google.android.material.color.MaterialColors;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.google.android.material.navigationrail.NavigationRailView;
+import com.google.android.material.shape.MaterialShapeDrawable;
+import com.google.android.material.shape.ShapeAppearanceModel;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
+import com.google.android.material.textview.MaterialTextView;
+import com.google.android.material.appbar.MaterialToolbar;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -53,8 +73,9 @@ import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-public class MainActivity extends Activity {
-    private static final int INK=Color.rgb(39,55,48), MUTED=Color.rgb(104,117,109), BG=Color.rgb(247,247,242), BLUE=Color.rgb(62,96,81), GREEN=Color.rgb(62,96,81), CREAM=Color.rgb(246,243,235), SAGE=Color.rgb(239,243,237), PEACH=Color.rgb(231,220,202), CARD=Color.rgb(242,245,240), BUTTON_ALT=Color.rgb(226,236,229), BORDER=Color.rgb(218,225,217), BUTTON_BORDER=Color.rgb(199,216,204), PAPER=Color.rgb(252,251,247);
+public class MainActivity extends AppCompatActivity {
+    private int INK, MUTED, BG, BLUE, GREEN, CREAM, SAGE, PEACH, CARD, BUTTON_ALT, BORDER, BUTTON_BORDER, PAPER;
+    private int ON_PRIMARY, ON_PRIMARY_CONTAINER, ON_SECONDARY_CONTAINER, ERROR, ON_ERROR, ERROR_CONTAINER, ON_ERROR_CONTAINER;
     // 녹음 레코드(String[]) 인덱스: 0 id · 1 파일 · 2/3 시작/종료 · 4 종류 · 5 장소 · 6 피해 · 7 범위의견 · 8 신호패턴 · 9/10 dBFS · 11 버킷 · 12~15 (미사용) · 16 상태 · 17/18 사유 · 19 동의 · 20 특징 · 21 로그버전 · 22 위도 · 23 경도 · 24 정확도 · 25 네트워크 · 26 최고ms · 27 최저ms · 28 공개IP · 29 태그
     private static final int ROW_MIN = 40;
     private static final int R_LAT=22,R_LON=23,R_ACC=24,R_NET=25,R_PEAK_MS=26,R_LOW_MS=27,R_IP=28,R_TAG=29;
@@ -101,34 +122,58 @@ public class MainActivity extends Activity {
     private static final String COMMITTEE_SYNC_PREFIX="committee_submission_sync_";
     private static final String COMMITTEE_BLOCK_PREFIX="committee_submission_account_block_";
 
-    @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);if(!getPreferences(0).getBoolean("auto_login",true))getPreferences(0).edit().remove("auth_token").remove("auth_login_id").remove("auth_email").apply();render();if(!getPreferences(0).getString("auth_token","").isEmpty())handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);}
+    @Override public void onCreate(Bundle b){super.onCreate(b);resolveThemeColors();configureSystemBars();if(b!=null){page=b.getString("page","홈");analysisId=b.getString("analysis_id","");}getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){@Override public void handleOnBackPressed(){if(!"홈".equals(page)){page="홈";render();}else{setEnabled(false);getOnBackPressedDispatcher().onBackPressed();}}});if(!getPreferences(0).getBoolean("auto_login",true))getPreferences(0).edit().remove("auth_token").remove("auth_login_id").remove("auth_email").apply();render();if(!getPreferences(0).getString("auth_token","").isEmpty())handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);}
+    private void configureSystemBars(){WindowCompat.setDecorFitsSystemWindows(getWindow(),false);boolean light=getResources().getBoolean(R.bool.mutelab_is_light_theme);WindowCompat.getInsetsController(getWindow(),getWindow().getDecorView()).setAppearanceLightStatusBars(light);if(Build.VERSION.SDK_INT>=26)WindowCompat.getInsetsController(getWindow(),getWindow().getDecorView()).setAppearanceLightNavigationBars(light);else getWindow().setNavigationBarColor(Color.BLACK);}
     @Override protected void onResume(){super.onResume();handler.postDelayed(()->{notificationsChecked=false;checkResidentNotifications();},700);}
-    @Override public void onBackPressed(){if(!"홈".equals(page)){page="홈";render();}else super.onBackPressed();}
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration){super.onConfigurationChanged(configuration);resolveThemeColors();configureSystemBars();render();}
+    @Override protected void onSaveInstanceState(Bundle out){out.putString("page",page);out.putString("analysis_id",analysisId);super.onSaveInstanceState(out);}
+    private int themeColor(int attribute,int fallback){return MaterialColors.getColor(this,attribute,fallback);}
+    private void resolveThemeColors(){
+        INK=themeColor(com.google.android.material.R.attr.colorOnSurface,Color.rgb(23,29,27));
+        MUTED=themeColor(com.google.android.material.R.attr.colorOnSurfaceVariant,Color.rgb(63,73,69));
+        BG=themeColor(com.google.android.material.R.attr.colorSurface,Color.rgb(245,251,247));
+        BLUE=themeColor(androidx.appcompat.R.attr.colorPrimary,Color.rgb(0,107,93));GREEN=BLUE;
+        ON_PRIMARY=themeColor(com.google.android.material.R.attr.colorOnPrimary,Color.WHITE);
+        SAGE=themeColor(com.google.android.material.R.attr.colorPrimaryContainer,Color.rgb(118,248,219));
+        ON_PRIMARY_CONTAINER=themeColor(com.google.android.material.R.attr.colorOnPrimaryContainer,INK);
+        BUTTON_ALT=themeColor(com.google.android.material.R.attr.colorSecondaryContainer,Color.rgb(204,232,223));
+        ON_SECONDARY_CONTAINER=themeColor(com.google.android.material.R.attr.colorOnSecondaryContainer,INK);
+        CREAM=themeColor(com.google.android.material.R.attr.colorTertiaryContainer,Color.rgb(194,232,253));
+        PEACH=BUTTON_ALT;
+        CARD=themeColor(com.google.android.material.R.attr.colorSurfaceContainerLow,BG);
+        PAPER=themeColor(com.google.android.material.R.attr.colorSurfaceContainerHigh,BG);
+        BORDER=themeColor(com.google.android.material.R.attr.colorOutlineVariant,Color.rgb(190,201,196));
+        BUTTON_BORDER=themeColor(com.google.android.material.R.attr.colorOutline,Color.rgb(111,121,117));
+        ERROR=themeColor(androidx.appcompat.R.attr.colorError,Color.rgb(186,26,26));
+        ON_ERROR=themeColor(com.google.android.material.R.attr.colorOnError,Color.WHITE);
+        ERROR_CONTAINER=themeColor(com.google.android.material.R.attr.colorErrorContainer,Color.rgb(255,218,214));
+        ON_ERROR_CONTAINER=themeColor(com.google.android.material.R.attr.colorOnErrorContainer,Color.rgb(65,0,2));
+    }
     private int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+.5f);}
-    private TextView text(String s,int size,int color,boolean bold){TextView v=new TextView(this);v.setText(s==null?"":s);v.setTextSize(size);v.setTextColor(color);v.setFontFeatureSettings("kern");if(bold)v.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));return v;}
+    private TextView text(String s,int size,int color,boolean bold){MaterialTextView v=new MaterialTextView(this);v.setText(s==null?"":s);v.setTextSize(size);v.setTextColor(color);v.setFontFeatureSettings("kern");v.setLineSpacing(0,1.08f);if(bold)v.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));return v;}
     private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
     private final class ActionRow extends LinearLayout{ActionRow(){super(MainActivity.this);setOrientation(HORIZONTAL);setGravity(Gravity.CENTER_VERTICAL);}@Override public void addView(View child,ViewGroup.LayoutParams params){if(child instanceof Button&&getChildCount()>0&&params instanceof LinearLayout.LayoutParams){LinearLayout.LayoutParams lp=(LinearLayout.LayoutParams)params;lp.leftMargin=Math.max(lp.leftMargin,dp(8));}super.addView(child,params);}}
     private LinearLayout row(){return new ActionRow();}
     private void pad(View v,int l,int t,int r,int b){v.setPadding(dp(l),dp(t),dp(r),dp(b));}
     private void gap(LinearLayout l,int h){View v=new View(this);l.addView(v,new LinearLayout.LayoutParams(1,dp(h)));}
-    private void card(LinearLayout parent,View inner){LinearLayout box=column();GradientDrawable surface=new GradientDrawable();surface.setColor(CARD);surface.setCornerRadius(dp(18));surface.setStroke(dp(1),BORDER);box.setBackground(surface);pad(box,16,15,16,15);box.addView(inner);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(10);parent.addView(box,lp);}
-    private void styleSurface(View view,int color,int radius,int stroke){GradientDrawable shape=new GradientDrawable();shape.setColor(color);shape.setCornerRadius(dp(radius));if(stroke!=Color.TRANSPARENT)shape.setStroke(dp(1),stroke);view.setBackground(shape);}
-    private Button button(String label,boolean primary,Runnable action){return button(label,null,primary,action);}private Button button(String icon,String label,boolean primary,Runnable action){Button b=new Button(this);b.setText((icon==null?"":icon+"  ")+(label==null?"":label));b.setAllCaps(false);b.setTextSize(14);b.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));b.setTextColor(primary?Color.WHITE:INK);styleSurface(b,primary?BLUE:BUTTON_ALT,14,primary?Color.TRANSPARENT:BUTTON_BORDER);b.setMinHeight(dp(48));b.setPadding(dp(14),dp(9),dp(14),dp(9));b.setElevation(0);b.setOnClickListener(v->action.run());return b;}
-    private void setActionEnabled(Button button,boolean enabled,String disabledReason){button.setEnabled(enabled);button.setAlpha(enabled?1f:.42f);if(!enabled&&!disabledReason.isEmpty())button.setContentDescription(button.getText()+" · "+disabledReason);}
-    private TextView pill(String label){TextView v=text(label,12,BLUE,true);v.setGravity(Gravity.CENTER);v.setPadding(dp(12),dp(6),dp(12),dp(6));GradientDrawable g=new GradientDrawable();g.setColor(SAGE);g.setCornerRadius(dp(14));g.setStroke(dp(1),BORDER);v.setBackground(g);return v;}private LinearLayout soundBars(){LinearLayout l=row();int[] h={dp(10),dp(22),dp(15)};int[] c={BLUE,PEACH,Color.rgb(198,211,200)};for(int i=0;i<3;i++){View bar=new View(this);GradientDrawable d=new GradientDrawable();d.setColor(c[i]);d.setCornerRadius(dp(5));bar.setBackground(d);l.addView(bar,new LinearLayout.LayoutParams(dp(7),h[i]));}return l;}private interface ModalAction{boolean run();}
-    private TextView modalAction(String label,boolean primary,boolean danger){String value=label==null?"":label;String ico=null;if(value.indexOf("닫기")>=0||value.indexOf("삭제")>=0)ico="✕";else if(value.indexOf("취소")>=0||value.indexOf("돌아가기")>=0)ico="↩";else if(value.indexOf("저장")>=0||value.indexOf("확인")>=0)ico="✓";TextView b=text((ico==null?"":ico+"  ")+value,14,primary?Color.WHITE:INK,true);b.setGravity(Gravity.CENTER);b.setMinWidth(dp(84));b.setMinHeight(dp(46));b.setPadding(dp(16),dp(10),dp(16),dp(10));GradientDrawable bg=new GradientDrawable();bg.setColor(primary?(danger?Color.rgb(168,76,67):BLUE):BUTTON_ALT);bg.setCornerRadius(dp(14));if(!primary)bg.setStroke(dp(1),BUTTON_BORDER);b.setBackground(bg);b.setClickable(true);b.setFocusable(true);return b;}
+    private void card(LinearLayout parent,View inner){MaterialCardView surface=new MaterialCardView(this);surface.setCardBackgroundColor(CARD);surface.setRadius(dp(20));surface.setStrokeColor(BORDER);surface.setStrokeWidth(dp(1));surface.setCardElevation(0);LinearLayout box=column();pad(box,18,16,18,16);box.addView(inner);surface.addView(box,new FrameLayout.LayoutParams(-1,-2));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(12);parent.addView(surface,lp);}
+    private void styleSurface(View view,int color,int radius,int stroke){ShapeAppearanceModel model=ShapeAppearanceModel.builder().setAllCornerSizes(dp(radius)).build();MaterialShapeDrawable shape=new MaterialShapeDrawable(model);shape.setFillColor(ColorStateList.valueOf(color));if(stroke!=Color.TRANSPARENT)shape.setStroke(dp(1),ColorStateList.valueOf(stroke));shape.setElevation(0);if(view.isClickable()){MaterialShapeDrawable mask=new MaterialShapeDrawable(model);mask.setFillColor(ColorStateList.valueOf(Color.WHITE));int ripple=themeColor(android.R.attr.colorControlHighlight,Color.argb(28,0,0,0));view.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple),shape,mask));}else view.setBackground(shape);}
+    private int iconFor(String value){if(value==null)return 0;switch(value){case "●":return R.drawable.ic_mic;case "■":return R.drawable.ic_stop;case "▶":return R.drawable.ic_play;case "✎":return R.drawable.ic_edit;case "✕":return R.drawable.ic_delete;case "✓":return R.drawable.ic_check;case "▤":return R.drawable.ic_description;case "≡":return R.drawable.ic_list;case "▦":return R.drawable.ic_calendar;case "⬇":return R.drawable.ic_download;case "↗":return R.drawable.ic_open_in_new;case "↩":return R.drawable.ic_arrow_back;case "‹":return R.drawable.ic_chevron_left;case "›":return R.drawable.ic_chevron_right;case "＋":return R.drawable.ic_add;case "☰":return R.drawable.ic_analytics;case "☎":return R.drawable.ic_call;case "♙":return R.drawable.ic_person;default:return 0;}}
+    private Button button(String label,boolean primary,Runnable action){return button(null,label,primary,action);}private Button button(String icon,String label,boolean primary,Runnable action){MaterialButton b=new MaterialButton(this,null,com.google.android.material.R.attr.materialButtonStyle);String shown=label==null?(icon==null?"":icon):label;int iconResource=iconFor(label==null?null:icon);b.setText(iconResource==0&&label!=null&&icon!=null?icon+"  "+shown:shown);b.setAllCaps(false);b.setTextSize(14);b.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));b.setTextColor(primary?ON_PRIMARY:ON_SECONDARY_CONTAINER);b.setBackgroundTintList(ColorStateList.valueOf(primary?BLUE:BUTTON_ALT));b.setCornerRadius(dp(24));b.setStrokeWidth(0);b.setInsetTop(0);b.setInsetBottom(0);b.setMinHeight(dp(48));b.setMinimumHeight(dp(48));b.setPadding(dp(18),dp(10),dp(18),dp(10));if(iconResource!=0){b.setIconResource(iconResource);b.setIconTint(ColorStateList.valueOf(primary?ON_PRIMARY:ON_SECONDARY_CONTAINER));b.setIconPadding(dp(8));b.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);}b.setContentDescription(shown);b.setOnClickListener(v->action.run());return b;}
+    private MaterialButton iconButton(int icon,String description,boolean primary,Runnable action){MaterialButton b=new MaterialButton(this,null,com.google.android.material.R.attr.materialIconButtonStyle);b.setText("");b.setIconResource(icon);b.setIconTint(ColorStateList.valueOf(primary?ON_PRIMARY:INK));b.setIconPadding(0);b.setBackgroundTintList(ColorStateList.valueOf(primary?BLUE:BUTTON_ALT));b.setCornerRadius(dp(24));b.setInsetTop(0);b.setInsetBottom(0);b.setMinWidth(dp(48));b.setMinHeight(dp(48));b.setMinimumWidth(dp(48));b.setMinimumHeight(dp(48));b.setContentDescription(description);TooltipCompat.setTooltipText(b,description);if(action!=null)b.setOnClickListener(v->action.run());return b;}
+    private void setActionEnabled(Button button,boolean enabled,String disabledReason){button.setEnabled(enabled);button.setAlpha(enabled?1f:.48f);button.setContentDescription(enabled?button.getText():button.getText()+(!disabledReason.isEmpty()?" · "+disabledReason:""));}
+    private TextView pill(String label){TextView v=text(label,12,ON_PRIMARY_CONTAINER,true);v.setGravity(Gravity.CENTER);v.setPadding(dp(12),dp(6),dp(12),dp(6));styleSurface(v,SAGE,14,BORDER);return v;}private LinearLayout soundBars(){LinearLayout l=row();int[] h={dp(10),dp(22),dp(15)};int[] c={BLUE,PEACH,BORDER};for(int i=0;i<3;i++){View bar=new View(this);GradientDrawable d=new GradientDrawable();d.setColor(c[i]);d.setCornerRadius(dp(5));bar.setBackground(d);l.addView(bar,new LinearLayout.LayoutParams(dp(7),h[i]));}return l;}private interface ModalAction{boolean run();}
+    private TextView modalAction(String label,boolean primary,boolean danger){MaterialButton b=new MaterialButton(this,null,com.google.android.material.R.attr.materialButtonStyle);b.setText(label==null?"":label);b.setAllCaps(false);b.setTextSize(14);b.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));b.setTextColor(primary?(danger?ON_ERROR:ON_PRIMARY):ON_SECONDARY_CONTAINER);b.setBackgroundTintList(ColorStateList.valueOf(primary?(danger?ERROR:BLUE):BUTTON_ALT));b.setCornerRadius(dp(24));b.setInsetTop(0);b.setInsetBottom(0);b.setMinWidth(dp(84));b.setMinHeight(dp(48));b.setMinimumHeight(dp(48));b.setContentDescription(label);return b;}
     private Dialog showCustomDialog(String heading,View content,String positive,String secondary,boolean danger,ModalAction onPositive,ModalAction onSecondary){
         Dialog dialog=new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         boolean scrollableBody=content instanceof ScrollView;
         LinearLayout shell=column();
-        GradientDrawable shellBg=new GradientDrawable();
-        shellBg.setColor(PAPER);shellBg.setCornerRadius(dp(24));shell.setBackground(shellBg);shell.setElevation(dp(8));pad(shell,22,20,22,18);
+        styleSurface(shell,PAPER,28,BORDER);shell.setElevation(dp(6));pad(shell,24,22,24,20);
         LinearLayout headingRow=row();
-        TextView badge=text(danger?"!":"✓",16,danger?Color.rgb(168,76,67):BLUE,true);badge.setGravity(Gravity.CENTER);
-        GradientDrawable badgeBg=new GradientDrawable();badgeBg.setShape(GradientDrawable.OVAL);badgeBg.setColor(danger?Color.rgb(250,235,231):SAGE);badge.setBackground(badgeBg);
+        TextView badge=text(danger?"!":"✓",16,danger?ON_ERROR_CONTAINER:ON_PRIMARY_CONTAINER,true);badge.setGravity(Gravity.CENTER);badge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);styleSurface(badge,danger?ERROR_CONTAINER:SAGE,19,Color.TRANSPARENT);
         headingRow.addView(badge,new LinearLayout.LayoutParams(dp(38),dp(38)));
-        LinearLayout titleBox=column();pad(titleBox,12,0,0,0);titleBox.addView(text(heading,19,INK,true));titleBox.addView(text("MUTELAB · 확인",10,MUTED,true));headingRow.addView(titleBox,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout titleBox=column();pad(titleBox,12,0,0,0);TextView dialogTitle=text(heading,20,INK,true);ViewCompat.setAccessibilityHeading(dialogTitle,true);titleBox.addView(dialogTitle);titleBox.addView(text("MUTELAB · 확인",12,MUTED,true));headingRow.addView(titleBox,new LinearLayout.LayoutParams(0,-2,1));
         shell.addView(headingRow);
         if(content!=null){
             gap(shell,15);
@@ -141,44 +186,41 @@ public class MainActivity extends Activity {
         if(positive!=null&&!positive.isEmpty()){TextView confirm=modalAction(positive,true,danger);actions.addView(confirm);confirm.setOnClickListener(v->{if(onPositive==null||onPositive.run())dialog.dismiss();});}
         shell.addView(actions);
         dialog.setContentView(shell,new ViewGroup.LayoutParams(-1,scrollableBody?-1:-2));
-        dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(true);dialog.show();
+        dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(!scrollableBody&&!danger);dialog.show();
         Window window=dialog.getWindow();
         if(window!=null){
             window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             WindowManager.LayoutParams lp=window.getAttributes();
-            lp.width=Math.min(dp(420),getResources().getDisplayMetrics().widthPixels-dp(36));
+             lp.width=Math.min(dp(560),getResources().getDisplayMetrics().widthPixels-dp(32));
             lp.height=scrollableBody?Math.min(dp(720),Math.max(dp(1),getResources().getDisplayMetrics().heightPixels-dp(36))):WindowManager.LayoutParams.WRAP_CONTENT;
             lp.gravity=Gravity.CENTER;lp.dimAmount=.42f;window.setAttributes(lp);
             if(scrollableBody)window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         }
-        return dialog;
+        ViewCompat.setAccessibilityPaneTitle(shell,heading);return dialog;
     }
     private void showMessageDialog(String heading,String message,boolean success){LinearLayout content=column();TextView body=text(message,14,MUTED,false);body.setLineSpacing(dp(3),1f);content.addView(body);showCustomDialog(heading,content,"확인",null,!success,()->true,null);}
-    private EditText input(String hint,int type){EditText e=new EditText(this);e.setSingleLine(false);e.setHint(hint);e.setHintTextColor(MUTED);e.setTextSize(15);e.setTextColor(INK);e.setInputType(type);e.setPadding(dp(14),dp(11),dp(14),dp(11));styleSurface(e,PAPER,13,BORDER);return e;}
+    private EditText input(String hint,int type){TextInputEditText e=new TextInputEditText(this);e.setSingleLine(false);e.setHint(hint);e.setHintTextColor(MUTED);e.setTextSize(16);e.setTextColor(INK);e.setInputType(type);e.setMinHeight(dp(56));e.setPadding(dp(16),dp(12),dp(16),dp(12));MaterialShapeDrawable shape=new MaterialShapeDrawable(ShapeAppearanceModel.builder().setAllCornerSizes(dp(12)).build());shape.setFillColor(ColorStateList.valueOf(PAPER));shape.setStroke(dp(1),new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{-android.R.attr.state_enabled},new int[]{}},new int[]{BLUE,BORDER,BUTTON_BORDER}));e.setBackground(shape);return e;}
     private void render(){
-        root=column();root.setBackgroundColor(BG);setContentView(root);
-        LinearLayout header=row();header.setBackgroundColor(BG);pad(header,16,10,12,10);
-        MenuIcon hamb=new MenuIcon(this);
-        hamb.setClickable(true);hamb.setFocusable(true);hamb.setOnClickListener(v->showMenuDrawer());
-        header.addView(hamb,new LinearLayout.LayoutParams(dp(48),dp(48)));
-        TextView headerTitle=text("MuteLab",19,INK,true);pad(headerTitle,12,0,0,0);
-        header.addView(headerTitle,new LinearLayout.LayoutParams(0,-2,1));
-        root.addView(header,new LinearLayout.LayoutParams(-1,dp(58)));
-        ScrollView scroll=new ScrollView(this);scroll.setClipToPadding(false);body=column();pad(body,18,16,18,100);scroll.addView(body);
-        FrameLayout content=new FrameLayout(this);content.addView(scroll,new LinearLayout.LayoutParams(-1,-1));
-        root.addView(content,new LinearLayout.LayoutParams(-1,0,1));
+        android.content.res.Configuration configuration=getResources().getConfiguration();boolean adaptive=configuration.screenWidthDp>=600&&configuration.screenHeightDp>=720;
+        root=column();root.setOrientation(adaptive?LinearLayout.HORIZONTAL:LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
+        NavigationRailView rail=adaptive?buildNavigationRail():null;
+        LinearLayout main=adaptive?column():root;
+        if(adaptive){root.addView(rail,new LinearLayout.LayoutParams(dp(96),-1));root.addView(main,new LinearLayout.LayoutParams(0,-1,1));}
+        MaterialToolbar header=new MaterialToolbar(this);header.setBackgroundColor(BG);header.setElevation(0);header.setTitle(navigationDestination().equals("홈")?"MuteLab":navigationDestination());header.setTitleTextColor(INK);header.setTitleTextAppearance(this,com.google.android.material.R.style.TextAppearance_Material3_TitleLarge);header.setContentInsetsRelative(dp(8),dp(12));header.setMinimumHeight(dp(64));
+        if(!adaptive){header.setNavigationIcon(R.drawable.ic_menu);header.setNavigationIconTint(INK);header.setNavigationContentDescription("메뉴 열기");header.setNavigationOnClickListener(v->showMenuDrawer());}
+        main.addView(header,new LinearLayout.LayoutParams(-1,-2));
+        ScrollView scroll=new ScrollView(this);scroll.setClipToPadding(false);scroll.setFillViewport(true);body=column();int horizontal=adaptive?24:18;pad(body,horizontal,18,horizontal,100);
+        FrameLayout bodyHost=new FrameLayout(this);int available=Math.max(dp(320),getResources().getDisplayMetrics().widthPixels-(adaptive?dp(96):0));FrameLayout.LayoutParams bodyLp=new FrameLayout.LayoutParams(adaptive?Math.min(dp(840),available):-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);bodyHost.addView(body,bodyLp);scroll.addView(bodyHost,new FrameLayout.LayoutParams(-1,-2));
+        FrameLayout content=new FrameLayout(this);content.addView(scroll,new FrameLayout.LayoutParams(-1,-1));
+        main.addView(content,new LinearLayout.LayoutParams(-1,0,1));
         int fx=getPreferences(0).getInt("fab_x",0),fy=getPreferences(0).getInt("fab_y",0);
         FrameLayout.LayoutParams flp;
-        if(fx>0||fy>0){flp=new FrameLayout.LayoutParams(dp(64),dp(64),Gravity.LEFT|Gravity.TOP);flp.leftMargin=fx;flp.topMargin=fy;}
-        else{flp=new FrameLayout.LayoutParams(dp(64),dp(64),Gravity.END|Gravity.BOTTOM);flp.setMargins(0,0,dp(18),dp(16));}
-        RFab fab=new RFab(this);
+        if(fx>0||fy>0){flp=new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.START|Gravity.TOP);flp.leftMargin=fx;flp.topMargin=fy;}
+        else{flp=new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.END|Gravity.BOTTOM);flp.setMargins(0,0,dp(18),dp(16));}
+        FloatingActionButton fab=new FloatingActionButton(this){@Override public boolean performClick(){return super.performClick();}};fab.setSize(FloatingActionButton.SIZE_NORMAL);fab.setImageResource(recorder==null?R.drawable.ic_mic:R.drawable.ic_stop);fab.setBackgroundTintList(ColorStateList.valueOf(recorder==null?BLUE:ERROR));fab.setImageTintList(ColorStateList.valueOf(recorder==null?ON_PRIMARY:ON_ERROR));
         if("홈".equals(page))fab.setVisibility(View.GONE);
-        fab.setRecording(recorder!=null);
         fab.setContentDescription(recorder==null?"녹음 시작":"녹음 종료");
-        fab.setElevation(dp(8));
-        android.util.TypedValue fabOut=new android.util.TypedValue();getTheme().resolveAttribute(android.R.attr.selectableItemBackground,fabOut,true);
-        android.graphics.drawable.Drawable fabRipple=getDrawable(fabOut.resourceId);
-        if(fabRipple!=null)fab.setForeground(fabRipple);
+        TooltipCompat.setTooltipText(fab,fab.getContentDescription());fab.setCompatElevation(dp(6));
         content.addView(fab,flp);
         final int[] downXY={-1,-1};
         fab.setOnTouchListener(new View.OnTouchListener(){
@@ -191,7 +233,7 @@ public class MainActivity extends Activity {
                     if(drag){
                         FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)fab.getLayoutParams();
                         int cw=content.getWidth(),ch=content.getHeight();
-                        lp.gravity=Gravity.LEFT|Gravity.TOP;
+                        lp.gravity=Gravity.START|Gravity.TOP;
                         if(cw>0){float nx=fab.getLeft()+ddx;if(nx<0)nx=0;if(nx>cw-fab.getWidth())nx=cw-fab.getWidth();lp.leftMargin=(int)nx;}
                         if(ch>0){float ny=fab.getTop()+ddy;if(ny<0)ny=0;if(ny>ch-fab.getHeight())ny=ch-fab.getHeight();lp.topMargin=(int)ny;}
                         fab.setLayoutParams(lp);
@@ -209,10 +251,22 @@ public class MainActivity extends Activity {
         if(fx>0||fy>0)content.post(()->{
             int maxX=Math.max(0,content.getWidth()-fab.getWidth()),maxY=Math.max(0,content.getHeight()-fab.getHeight());
             FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)fab.getLayoutParams();
-            if(fx>maxX||fy>maxY||(fx==0&&fy>=maxY-dp(5))){lp.gravity=Gravity.RIGHT|Gravity.BOTTOM;lp.leftMargin=0;lp.topMargin=0;lp.setMargins(0,0,dp(18),dp(16));fab.setLayoutParams(lp);getPreferences(0).edit().remove("fab_x").remove("fab_y").apply();}
-            else{lp.gravity=Gravity.LEFT|Gravity.TOP;lp.leftMargin=Math.max(0,Math.min(fx,maxX));lp.topMargin=Math.max(0,Math.min(fy,maxY));fab.setLayoutParams(lp);getPreferences(0).edit().putInt("fab_x",lp.leftMargin).putInt("fab_y",lp.topMargin).apply();}
+            if(fx>maxX||fy>maxY||(fx==0&&fy>=maxY-dp(5))){lp.gravity=Gravity.END|Gravity.BOTTOM;lp.leftMargin=0;lp.topMargin=0;lp.setMargins(0,0,dp(18),dp(16));fab.setLayoutParams(lp);getPreferences(0).edit().remove("fab_x").remove("fab_y").apply();}
+            else{lp.gravity=Gravity.START|Gravity.TOP;lp.leftMargin=Math.max(0,Math.min(fx,maxX));lp.topMargin=Math.max(0,Math.min(fy,maxY));fab.setLayoutParams(lp);getPreferences(0).edit().putInt("fab_x",lp.leftMargin).putInt("fab_y",lp.topMargin).apply();}
         });
+        ViewCompat.setOnApplyWindowInsetsListener(root,(view,insets)->{
+            Insets bars=insets.getInsets(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout());Insets ime=insets.getInsets(WindowInsetsCompat.Type.ime());int bottom=Math.max(bars.bottom,ime.bottom);root.setPadding(bars.left,0,bars.right,0);header.setPadding(0,bars.top,0,0);header.setMinimumHeight(dp(64)+bars.top);body.setPadding(dp(horizontal),dp(18),dp(horizontal),dp(100)+bottom);if(rail!=null)rail.setPadding(0,bars.top,0,bars.bottom);
+            FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)fab.getLayoutParams();if(fx==0&&fy==0){lp.rightMargin=dp(18);lp.bottomMargin=dp(16)+bottom;fab.setLayoutParams(lp);}else content.post(()->{FrameLayout.LayoutParams moved=(FrameLayout.LayoutParams)fab.getLayoutParams();int maxY=Math.max(0,content.getHeight()-fab.getHeight()-bottom-dp(8));if(moved.topMargin>maxY){moved.topMargin=maxY;fab.setLayoutParams(moved);getPreferences(0).edit().putInt("fab_y",maxY).apply();}});return insets;
+        });ViewCompat.requestApplyInsets(root);
         switch(page){case "측정":case "소음측정":showMeasure();break;case "기록":case "소음기록":showLogs();break;case "제출양식":showForms();break;case "안내":case "층간소음안내":showInfo();break;case "층간소음보고서":showReports();break;case "내 정보":showProfile();break;case "계정":showAccount();break;case "회원가입":showSignup();break;case "아이디 찾기":showFindId();break;case "비밀번호 재설정":showPasswordReset();break;case "분석":showAnalysis();break;default:showHome();}
+    }
+    private String navigationDestination(){if("측정".equals(page))return "소음측정";if("기록".equals(page)||"분석".equals(page))return "소음기록";if("안내".equals(page))return "층간소음안내";if("회원가입".equals(page)||"아이디 찾기".equals(page)||"비밀번호 재설정".equals(page))return "계정";return page;}
+    private int tabIcon(int index){switch(index){case 0:return R.drawable.ic_home;case 1:return R.drawable.ic_mic;case 2:return R.drawable.ic_list;case 3:return R.drawable.ic_description;case 4:return R.drawable.ic_info;case 5:return R.drawable.ic_analytics;case 6:return R.drawable.ic_person;default:return R.drawable.ic_account;}}
+    private NavigationRailView buildNavigationRail(){
+        NavigationRailView rail=new NavigationRailView(this);rail.setBackgroundColor(PAPER);rail.setMenuGravity(Gravity.CENTER);rail.setLabelVisibilityMode(com.google.android.material.navigation.NavigationBarView.LABEL_VISIBILITY_LABELED);rail.setItemActiveIndicatorEnabled(true);rail.setItemIconSize(dp(24));
+        boolean homeSelected="홈".equals(navigationDestination());MaterialButton home=new MaterialButton(this,null,com.google.android.material.R.attr.materialIconButtonStyle);home.setIconResource(R.drawable.ic_home);home.setIconTint(ColorStateList.valueOf(homeSelected?ON_PRIMARY_CONTAINER:INK));home.setContentDescription("홈");home.setSelected(homeSelected);ViewCompat.setStateDescription(home,homeSelected?"선택됨":"선택되지 않음");TooltipCompat.setTooltipText(home,"홈");home.setBackgroundTintList(ColorStateList.valueOf(homeSelected?SAGE:Color.TRANSPARENT));home.setCornerRadius(dp(20));home.setMinWidth(dp(56));home.setMinHeight(dp(56));home.setOnClickListener(v->{page="홈";render();});rail.addHeaderView(home);
+        for(int i=1;i<tabs.length;i++)rail.getMenu().add(0,1000+i,i,tabs[i]).setIcon(tabIcon(i));String destination=navigationDestination();if(homeSelected){rail.getMenu().setGroupCheckable(0,false,true);for(int i=0;i<rail.getMenu().size();i++)rail.getMenu().getItem(i).setChecked(false);}else for(int i=1;i<tabs.length;i++)if(tabs[i].equals(destination)){rail.setSelectedItemId(1000+i);break;}
+        rail.setOnItemSelectedListener(item->{int index=item.getItemId()-1000;if(index<1||index>=tabs.length)return false;page=tabs[index];render();return true;});rail.setContentDescription("주요 메뉴");return rail;
     }
     private final class MenuIcon extends View{
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -263,7 +317,7 @@ public class MainActivity extends Activity {
         LinearLayout box=column();pad(box,4,0,4,6);
         LinearLayout nav=row();
         nav.addView(button("‹","이전 달",false,()->{java.util.Calendar n=(java.util.Calendar)cal.clone();n.add(java.util.Calendar.MONTH,-1);showCalendarAt(n);}),new LinearLayout.LayoutParams(0,-2,1));
-        nav.addView(button("다음 달","›",false,()->{java.util.Calendar n=(java.util.Calendar)cal.clone();n.add(java.util.Calendar.MONTH,1);showCalendarAt(n);}),new LinearLayout.LayoutParams(0,-2,1));
+        nav.addView(button("›","다음 달",false,()->{java.util.Calendar n=(java.util.Calendar)cal.clone();n.add(java.util.Calendar.MONTH,1);showCalendarAt(n);}),new LinearLayout.LayoutParams(0,-2,1));
         box.addView(nav);gap(box,4);
         LinearLayout wd=row();for(String s:new String[]{"일","월","화","수","목","금","토"}){TextView t=text(s,12,MUTED,false);t.setGravity(Gravity.CENTER);wd.addView(t,new LinearLayout.LayoutParams(0,-2,1));}box.addView(wd);gap(box,4);
         java.util.Calendar first=java.util.Calendar.getInstance();first.clear();first.set(java.util.Calendar.YEAR,cal.get(java.util.Calendar.YEAR));first.set(java.util.Calendar.MONTH,cal.get(java.util.Calendar.MONTH));first.set(java.util.Calendar.DAY_OF_MONTH,1);
@@ -278,12 +332,12 @@ public class MainActivity extends Activity {
                 int dd=day.get(java.util.Calendar.DAY_OF_MONTH);
                 String key=String.format(Locale.KOREA,"%04d-%02d-%02d",day.get(java.util.Calendar.YEAR),day.get(java.util.Calendar.MONTH)+1,dd);
                 int n=0;if(by.containsKey(key))n=by.get(key).size();
-                LinearLayout cell=column();cell.setGravity(Gravity.CENTER);cell.setClickable(!other);cell.setFocusable(!other);cell.setPadding(dp(1),dp(2),dp(1),dp(2));
+                LinearLayout cell=column();cell.setGravity(Gravity.CENTER);cell.setClickable(!other);cell.setFocusable(!other);cell.setPadding(dp(1),dp(2),dp(1),dp(2));cell.setContentDescription(key+(!other?(n>0?", 측정 기록 "+n+"건":", 측정 기록 없음"):""));
                 GradientDrawable cellBg=new GradientDrawable();cellBg.setCornerRadius(dp(10));cellBg.setColor(other?Color.TRANSPARENT:(n>0?SAGE:PAPER));if(!other)cellBg.setStroke(dp(1),n>0?BLUE:BORDER);cell.setBackground(cellBg);
                 TextView number=text(String.valueOf(dd),14,other?MUTED:(n>0?BLUE:INK),true);number.setGravity(Gravity.CENTER);cell.addView(number,new LinearLayout.LayoutParams(-1,0,1));
                 TextView count=text(n>0?n+"건":" ",9,n>0?BLUE:MUTED,true);count.setGravity(Gravity.CENTER);cell.addView(count,new LinearLayout.LayoutParams(-1,dp(12)));
                 if(!other){final String kk=key;cell.setOnClickListener(w->openDay(kk));}
-                LinearLayout.LayoutParams cellLp=new LinearLayout.LayoutParams(0,dp(46),1);cellLp.setMargins(dp(1),dp(1),dp(1),dp(1));r2.addView(cell,cellLp);
+                LinearLayout.LayoutParams cellLp=new LinearLayout.LayoutParams(0,dp(48),1);cellLp.setMargins(dp(1),dp(1),dp(1),dp(1));r2.addView(cell,cellLp);
                 day.add(java.util.Calendar.DAY_OF_MONTH,1);
             }
             box.addView(r2);
@@ -301,7 +355,7 @@ public class MainActivity extends Activity {
             c.setTimeInMillis(Long.parseLong(d[2]));
             String tm=String.format(Locale.KOREA,"%02d:%02d",c.get(java.util.Calendar.HOUR_OF_DAY),c.get(java.util.Calendar.MINUTE));
             TextView row=text(tm+" · "+(d[4].isEmpty()?"종류 미입력":d[4])+(d[5].isEmpty()?"":" · "+d[5]),13,INK,true);
-            row.setContentDescription("녹음 분석 결과 보기");row.setClickable(true);row.setFocusable(true);
+            row.setContentDescription(row.getText()+", 녹음 분석 결과 보기");row.setClickable(true);row.setFocusable(true);row.setMinHeight(dp(48));row.setGravity(Gravity.CENTER_VERTICAL);
             final String rid=d[0];row.setOnClickListener(w->{analysisId=rid;page="분석";render();});
             box.addView(row);
             if(!d[6].isEmpty()){box.addView(text(d[6],11,MUTED,false));}
@@ -320,17 +374,17 @@ public class MainActivity extends Activity {
         PdfRenderer renderer=null;ParcelFileDescriptor descriptor=null;
         try{
             File file=FormDocuments.materialize(this,form);descriptor=ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY);renderer=new PdfRenderer(descriptor);
-            LinearLayout shell=column();GradientDrawable bg=new GradientDrawable();bg.setColor(Color.WHITE);bg.setCornerRadius(dp(18));shell.setBackground(bg);pad(shell,14,14,14,12);
-            LinearLayout heading=row();TextView title=text(form.title,17,INK,true);title.setMaxLines(2);heading.addView(title,new LinearLayout.LayoutParams(0,-2,1));TextView close=text("닫기",13,BLUE,true);close.setGravity(Gravity.CENTER);close.setPadding(dp(12),dp(10),dp(6),dp(10));heading.addView(close);shell.addView(heading);
+            LinearLayout shell=column();styleSurface(shell,PAPER,24,BORDER);pad(shell,16,16,16,14);ViewCompat.setAccessibilityPaneTitle(shell,form.title);
+            LinearLayout heading=row();TextView title=text(form.title,18,INK,true);title.setMaxLines(2);ViewCompat.setAccessibilityHeading(title,true);heading.addView(title,new LinearLayout.LayoutParams(0,-2,1));MaterialButton close=iconButton(R.drawable.ic_close,"PDF 미리보기 닫기",false,null);heading.addView(close,new LinearLayout.LayoutParams(dp(48),dp(48)));shell.addView(heading);
             gap(shell,8);LinearLayout actions=row();actions.addView(button("⬇","다운로드",false,()->downloadForm(form)),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("↗","공유",true,()->shareForm(form)),new LinearLayout.LayoutParams(0,-2,1));shell.addView(actions);gap(shell,8);
-            ScrollView pages=new ScrollView(this);pages.setFillViewport(true);LinearLayout pageColumn=column();pageColumn.setBackgroundColor(Color.rgb(238,241,244));pad(pageColumn,8,8,8,8);
+            ScrollView pages=new ScrollView(this);pages.setFillViewport(true);LinearLayout pageColumn=column();pageColumn.setBackgroundColor(CARD);pad(pageColumn,8,8,8,8);
             int targetWidth=Math.max(dp(240),Math.min(1200,getResources().getDisplayMetrics().widthPixels-dp(64)));
             for(int i=0;i<renderer.getPageCount();i++){
                 PdfRenderer.Page page=renderer.openPage(i);int width=targetWidth;int height=Math.max(1,Math.round(width*(float)page.getHeight()/page.getWidth()));Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);bitmap.eraseColor(Color.WHITE);page.render(bitmap,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);page.close();
-                ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);image.setScaleType(ImageView.ScaleType.FIT_CENTER);image.setBackgroundColor(Color.WHITE);image.setElevation(dp(2));LinearLayout.LayoutParams imageLp=new LinearLayout.LayoutParams(-1,-2);imageLp.bottomMargin=dp(10);pageColumn.addView(image,imageLp);
+                ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);image.setScaleType(ImageView.ScaleType.FIT_CENTER);image.setBackgroundColor(Color.WHITE);image.setElevation(dp(2));image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);LinearLayout.LayoutParams imageLp=new LinearLayout.LayoutParams(-1,-2);imageLp.bottomMargin=dp(10);pageColumn.addView(image,imageLp);
             }
             pages.addView(pageColumn);shell.addView(pages,new LinearLayout.LayoutParams(-1,0,1));
-            Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);dialog.setContentView(shell);dialog.setCanceledOnTouchOutside(true);close.setOnClickListener(v->dialog.dismiss());dialog.show();Window window=dialog.getWindow();if(window!=null){window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);WindowManager.LayoutParams lp=window.getAttributes();lp.width=Math.min(dp(700),getResources().getDisplayMetrics().widthPixels-dp(24));lp.height=getResources().getDisplayMetrics().heightPixels-dp(80);lp.gravity=Gravity.CENTER;lp.dimAmount=.45f;window.setAttributes(lp);}
+            Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);dialog.setContentView(shell);dialog.setCanceledOnTouchOutside(false);close.setOnClickListener(v->dialog.dismiss());dialog.show();Window window=dialog.getWindow();if(window!=null){WindowCompat.setDecorFitsSystemWindows(window,true);window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);WindowManager.LayoutParams lp=window.getAttributes();lp.width=Math.min(dp(840),getResources().getDisplayMetrics().widthPixels-dp(24));lp.height=getResources().getDisplayMetrics().heightPixels-dp(80);lp.gravity=Gravity.CENTER;lp.dimAmount=.45f;window.setAttributes(lp);}
         }catch(Exception e){showMessageDialog("PDF를 열지 못했습니다","양식 미리보기를 불러오지 못했습니다. 다시 시도해 주세요.",false);}
         finally{if(renderer!=null)try{renderer.close();}catch(Exception ignored){}else if(descriptor!=null)try{descriptor.close();}catch(Exception ignored){}}
     }
@@ -345,18 +399,18 @@ public class MainActivity extends Activity {
         catch(Exception e){showMessageDialog("공유할 수 없습니다","PDF 공유 화면을 열지 못했습니다.",false);}
     }
 
-    private void title(String title,String desc){body.addView(text(title,24,INK,true));gap(body,5);TextView subtitle=text(desc,14,MUTED,false);subtitle.setLineSpacing(dp(2),1f);body.addView(subtitle);gap(body,16);}
+    private void title(String title,String desc){TextView heading=text(title,24,INK,true);ViewCompat.setAccessibilityHeading(heading,true);body.addView(heading);gap(body,6);TextView subtitle=text(desc,14,MUTED,false);subtitle.setLineSpacing(dp(2),1f);body.addView(subtitle);gap(body,18);}
 
     private void showMenuDrawer(){
         Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         FrameLayout backdrop=new FrameLayout(this);View scrim=new View(this);scrim.setBackgroundColor(Color.argb(155,0,0,0));scrim.setAlpha(0f);backdrop.addView(scrim,new FrameLayout.LayoutParams(-1,-1));
-        int drawerWidth=Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(52));
+        int drawerWidth=Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(52));final float drawerClosedTranslation=ViewCompat.getLayoutDirection(root)==ViewCompat.LAYOUT_DIRECTION_RTL?drawerWidth:-drawerWidth;
         LinearLayout drawer=column();GradientDrawable panelBg=new GradientDrawable();panelBg.setColor(PAPER);panelBg.setCornerRadii(new float[]{0,0,dp(24),dp(24),dp(24),dp(24),0,0});drawer.setBackground(panelBg);drawer.setElevation(dp(8));pad(drawer,16,18,16,18);
-        LinearLayout heading=row();heading.addView(text("메뉴",21,INK,true),new LinearLayout.LayoutParams(0,-2,1));TextView close=text("✕",19,MUTED,true);close.setGravity(Gravity.CENTER);close.setContentDescription("메뉴 닫기");close.setClickable(true);close.setFocusable(true);close.setPadding(dp(14),dp(10),dp(8),dp(10));heading.addView(close);drawer.addView(heading);gap(drawer,20);
-        for(int i=0;i<tabs.length;i++){String item=tabs[i];boolean selected=item.equals(page);LinearLayout entry=row();entry.setPadding(dp(12),0,dp(12),0);entry.setMinimumHeight(dp(54));entry.setClickable(true);entry.setFocusable(true);GradientDrawable rowBg=new GradientDrawable();rowBg.setColor(selected?SAGE:Color.TRANSPARENT);rowBg.setCornerRadius(dp(14));entry.setBackground(rowBg);entry.addView(new MenuNavIcon(this,i,selected),new LinearLayout.LayoutParams(dp(24),dp(24)));TextView label=text(item,15,selected?BLUE:INK,true);pad(label,dp(14),0,0,0);entry.addView(label);LinearLayout.LayoutParams rowLp=new LinearLayout.LayoutParams(-1,-2);rowLp.bottomMargin=dp(4);drawer.addView(entry,rowLp);entry.setContentDescription(item);entry.setOnClickListener(v->{page=item;drawer.animate().translationX(-drawerWidth).setDuration(220).withEndAction(()->{dialog.dismiss();render();}).start();});}
-        FrameLayout.LayoutParams drawerLp=new FrameLayout.LayoutParams(drawerWidth,-1,Gravity.LEFT|Gravity.TOP);backdrop.addView(drawer,drawerLp);drawer.setTranslationX(-drawerWidth);drawer.setClickable(true);
-        dialog.setContentView(backdrop);dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(false);dialog.show();Window window=dialog.getWindow();if(window!=null){window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.MATCH_PARENT);window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);window.setGravity(Gravity.LEFT|Gravity.TOP);}
-        scrim.setOnClickListener(v->{drawer.animate().translationX(-drawerWidth).setDuration(200).withEndAction(dialog::dismiss).start();});close.setOnClickListener(v->{drawer.animate().translationX(-drawerWidth).setDuration(200).withEndAction(dialog::dismiss).start();});
+        LinearLayout heading=row();TextView drawerTitle=text("메뉴",22,INK,true);ViewCompat.setAccessibilityHeading(drawerTitle,true);heading.addView(drawerTitle,new LinearLayout.LayoutParams(0,-2,1));MaterialButton close=iconButton(R.drawable.ic_close,"메뉴 닫기",false,null);heading.addView(close,new LinearLayout.LayoutParams(dp(48),dp(48)));drawer.addView(heading);gap(drawer,20);
+        for(int i=0;i<tabs.length;i++){String item=tabs[i];boolean selected=item.equals(navigationDestination());MaterialButton entry=new MaterialButton(this,null,com.google.android.material.R.attr.materialButtonStyle);entry.setText(item);entry.setAllCaps(false);entry.setTextSize(15);entry.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));entry.setTextColor(selected?ON_PRIMARY_CONTAINER:INK);entry.setIconResource(tabIcon(i));entry.setIconTint(ColorStateList.valueOf(selected?ON_PRIMARY_CONTAINER:MUTED));entry.setIconPadding(dp(14));entry.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);entry.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);entry.setMinHeight(dp(56));entry.setInsetTop(0);entry.setInsetBottom(0);entry.setCornerRadius(dp(28));entry.setBackgroundTintList(ColorStateList.valueOf(selected?SAGE:Color.TRANSPARENT));entry.setSelected(selected);entry.setContentDescription(item);ViewCompat.setStateDescription(entry,selected?"선택됨":"선택되지 않음");LinearLayout.LayoutParams rowLp=new LinearLayout.LayoutParams(-1,-2);rowLp.bottomMargin=dp(4);drawer.addView(entry,rowLp);entry.setOnClickListener(v->{page=item;drawer.animate().translationX(drawerClosedTranslation).setDuration(220).withEndAction(()->{dialog.dismiss();render();}).start();});}
+        FrameLayout.LayoutParams drawerLp=new FrameLayout.LayoutParams(drawerWidth,-1,Gravity.START|Gravity.TOP);backdrop.addView(drawer,drawerLp);drawer.setTranslationX(drawerClosedTranslation);drawer.setClickable(true);
+        ViewCompat.setAccessibilityPaneTitle(drawer,"주요 메뉴");ViewCompat.setOnApplyWindowInsetsListener(drawer,(view,insets)->{Insets bars=insets.getInsets(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout());drawer.setPadding(dp(16)+bars.left,dp(18)+bars.top,dp(16),dp(18)+bars.bottom);return insets;});dialog.setContentView(backdrop);dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(false);dialog.show();Window window=dialog.getWindow();if(window!=null){WindowCompat.setDecorFitsSystemWindows(window,false);window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.MATCH_PARENT);window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);window.setGravity(Gravity.START|Gravity.TOP);}ViewCompat.requestApplyInsets(drawer);
+        scrim.setOnClickListener(v->{drawer.animate().translationX(drawerClosedTranslation).setDuration(200).withEndAction(dialog::dismiss).start();});close.setOnClickListener(v->{drawer.animate().translationX(drawerClosedTranslation).setDuration(200).withEndAction(dialog::dismiss).start();});
         drawer.post(()->{scrim.animate().alpha(1f).setDuration(180).start();drawer.animate().translationX(0).setDuration(240).start();});
     }
     private String apiBaseUrl(){String value=getPreferences(0).getString("api_base_url",DEFAULT_API_BASE_URL).trim();while(value.endsWith("/"))value=value.substring(0,value.length()-1);return value;}
@@ -403,67 +457,18 @@ public class MainActivity extends Activity {
             },null);
         });
     }
-    private static final android.text.method.PasswordTransformationMethod ASTERISK_MASK =
-            new android.text.method.PasswordTransformationMethod() {
-        @Override public CharSequence getTransformation(CharSequence source, View view) {
-            return new CharSequence() {
-                @Override public int length() { return source.length(); }
-                @Override public char charAt(int index) {
-                    if (index < 0 || index >= length()) throw new IndexOutOfBoundsException();
-                    return '*';
-                }
-                @Override public CharSequence subSequence(int start, int end) {
-                    if (start < 0 || end < start || end > length()) throw new IndexOutOfBoundsException();
-                    char[] mask = new char[end - start];
-                    Arrays.fill(mask, '*');
-                    return new String(mask);
-                }
-                @Override public String toString() { return subSequence(0, length()).toString(); }
-            };
-        }
-    };
-
     private EditText authInput(LinearLayout form, String label, String hint, int inputType) {
-        gap(form, 7);
-        form.addView(text(label, 13, INK, true));
-        EditText edit = input(hint, inputType);
-        edit.setSingleLine(true);
-        edit.setInputType(inputType);
-        if ((inputType & InputType.TYPE_MASK_VARIATION) != InputType.TYPE_TEXT_VARIATION_PASSWORD) {
-            form.addView(edit);
-            return edit;
-        }
-
-        edit.setTransformationMethod(ASTERISK_MASK);
-        edit.setMinHeight(dp(48));
-        edit.setPaddingRelative(dp(14), dp(11), dp(50), dp(11));
-        android.widget.FrameLayout field = new android.widget.FrameLayout(this);
-        field.addView(edit, new android.widget.FrameLayout.LayoutParams(-1, -2));
-
-        ImageButton toggle = new ImageButton(this);
-        toggle.setBackgroundColor(Color.TRANSPARENT);
-        toggle.setImageTintList(android.content.res.ColorStateList.valueOf(MUTED));
-        toggle.setImageResource(R.drawable.ic_password_visible);
-        toggle.setContentDescription("비밀번호 표시");
-        toggle.setOnClickListener(v -> {
-            int start = edit.getSelectionStart();
-            int end = edit.getSelectionEnd();
-            boolean reveal = edit.getTransformationMethod() == ASTERISK_MASK;
-            edit.setTransformationMethod(reveal ? android.text.method.SingleLineTransformationMethod.getInstance() : ASTERISK_MASK);
-            if (start >= 0 && end >= 0) edit.setSelection(start, end);
-            toggle.setImageResource(reveal ? R.drawable.ic_password_hidden : R.drawable.ic_password_visible);
-            toggle.setContentDescription(reveal ? "비밀번호 숨기기" : "비밀번호 표시");
-        });
-        field.addView(toggle, new android.widget.FrameLayout.LayoutParams(dp(48), dp(48), Gravity.END | Gravity.CENTER_VERTICAL));
-        form.addView(field, new LinearLayout.LayoutParams(-1, -2));
-        return edit;
+        gap(form,8);TextInputLayout field=new TextInputLayout(this,null,com.google.android.material.R.attr.textInputOutlinedStyle);field.setHint(label);field.setPlaceholderText(hint);field.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);field.setBoxCornerRadii(dp(12),dp(12),dp(12),dp(12));field.setBoxStrokeColor(BLUE);field.setBoxStrokeErrorColor(ColorStateList.valueOf(ERROR));
+        TextInputEditText edit=new TextInputEditText(field.getContext());edit.setSingleLine(true);edit.setTextSize(16);edit.setTextColor(INK);edit.setHintTextColor(MUTED);edit.setInputType(inputType);edit.setMinHeight(dp(56));edit.setPaddingRelative(dp(16),dp(10),dp(16),dp(10));
+        boolean password=(inputType&InputType.TYPE_MASK_VARIATION)==InputType.TYPE_TEXT_VARIATION_PASSWORD;if(password)field.setEndIconMode(TextInputLayout.END_ICON_PASSWORD_TOGGLE);field.addView(edit,new LinearLayout.LayoutParams(-1,-2));form.addView(field,new LinearLayout.LayoutParams(-1,-2));return edit;
     }
+    private void setInputVisible(EditText edit,boolean visible){android.view.ViewParent parent=edit.getParent();while(parent instanceof View&&!(parent instanceof TextInputLayout))parent=parent.getParent();View container=parent instanceof View?(View)parent:edit;container.setVisibility(visible?View.VISIBLE:View.GONE);}
     private void showEmailRequested(JSONObject data){showMessageDialog("인증 요청",data.optString("message","이메일로 받은 6자리 코드를 입력해 주세요."),true);}
     private void showAccount(){
         title("계정","이메일을 인증해 회원가입하고 로그인합니다.");
         LinearLayout server=column();server.addView(text("API 서버 주소",13,INK,true));EditText url=input("http://172.30.1.14:3100/api",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);url.setSingleLine(true);url.setText(apiBaseUrl());server.addView(url);gap(server,5);server.addView(button("서버 주소 저장",false,()->{String value=url.getText().toString().trim();if(!value.startsWith("http://")&&!value.startsWith("https://")){url.setError("http:// 또는 https:// 주소를 입력해 주세요.");return;}getPreferences(0).edit().putString("api_base_url",value).apply();showMessageDialog("서버 주소 저장","API 주소를 이 기기에 저장했습니다.",true);}));card(body,server);gap(body,5);
         String token=getPreferences(0).getString("auth_token","");
-        if(token.isEmpty()){LinearLayout login=column();login.addView(text("로그인",18,INK,true));gap(login,5);EditText id=authInput(login,"아이디","아이디",InputType.TYPE_CLASS_TEXT);EditText password=authInput(login,"비밀번호","비밀번호",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);CheckBox autoLogin=new CheckBox(this);autoLogin.setText("자동 로그인");autoLogin.setTextSize(14);autoLogin.setTextColor(INK);autoLogin.setChecked(getPreferences(0).getBoolean("auto_login",true));autoLogin.setOnCheckedChangeListener((v,checked)->getPreferences(0).edit().putBoolean("auto_login",checked).apply());login.addView(autoLogin);gap(login,8);login.addView(button("로그인",true,()->{String loginId=id.getText().toString().trim(),pw=password.getText().toString();apiRequest("POST","/auth/login",json("loginId",loginId,"password",pw),false,(data,error)->{if(error!=null){showMessageDialog("로그인 실패",error,false);return;}getPreferences(0).edit().putBoolean("auto_login",autoLogin.isChecked()).putString("auth_token",data.optString("token","")).putString("auth_login_id",data.optString("loginId",loginId)).putString("auth_email",data.optString("email","")).apply();JSONObject profile=data.optJSONObject("profile");saveServerProfile(profile);syncPendingRecordings();handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);notificationsChecked=false;handler.postDelayed(this::checkResidentNotifications,500);page="내 정보";render();});}));gap(login,5);LinearLayout actions=row();actions.addView(button("회원가입",false,()->{page="회원가입";render();}),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("아이디 찾기",false,()->{page="아이디 찾기";render();}),new LinearLayout.LayoutParams(0,-2,1));login.addView(actions);gap(login,4);login.addView(button("비밀번호를 잊으셨나요?",false,()->{page="비밀번호 재설정";render();}));card(body,login);}
+        if(token.isEmpty()){LinearLayout login=column();login.addView(text("로그인",18,INK,true));gap(login,5);EditText id=authInput(login,"아이디","아이디",InputType.TYPE_CLASS_TEXT);EditText password=authInput(login,"비밀번호","비밀번호",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);CheckBox autoLogin=new MaterialCheckBox(this);autoLogin.setText("자동 로그인");autoLogin.setTextSize(14);autoLogin.setTextColor(INK);autoLogin.setChecked(getPreferences(0).getBoolean("auto_login",true));autoLogin.setOnCheckedChangeListener((v,checked)->getPreferences(0).edit().putBoolean("auto_login",checked).apply());login.addView(autoLogin);gap(login,8);login.addView(button("로그인",true,()->{String loginId=id.getText().toString().trim(),pw=password.getText().toString();apiRequest("POST","/auth/login",json("loginId",loginId,"password",pw),false,(data,error)->{if(error!=null){showMessageDialog("로그인 실패",error,false);return;}getPreferences(0).edit().putBoolean("auto_login",autoLogin.isChecked()).putString("auth_token",data.optString("token","")).putString("auth_login_id",data.optString("loginId",loginId)).putString("auth_email",data.optString("email","")).apply();JSONObject profile=data.optJSONObject("profile");saveServerProfile(profile);syncPendingRecordings();handler.postDelayed(this::syncReportedCommitteeSubmissions,1200);notificationsChecked=false;handler.postDelayed(this::checkResidentNotifications,500);page="내 정보";render();});}));gap(login,5);LinearLayout actions=row();actions.addView(button("회원가입",false,()->{page="회원가입";render();}),new LinearLayout.LayoutParams(0,-2,1));actions.addView(button("아이디 찾기",false,()->{page="아이디 찾기";render();}),new LinearLayout.LayoutParams(0,-2,1));login.addView(actions);gap(login,4);login.addView(button("비밀번호를 잊으셨나요?",false,()->{page="비밀번호 재설정";render();}));card(body,login);}
         else{LinearLayout profile=column();profile.addView(text("로그인되어 있습니다",18,INK,true));gap(profile,8);profile.addView(text("아이디: "+getPreferences(0).getString("auth_login_id",""),14,MUTED,false));profile.addView(text("이메일: "+getPreferences(0).getString("auth_email",""),14,MUTED,false));gap(profile,8);profile.addView(button("내 정보 입력 / 수정",true,()->{page="내 정보";render();}));gap(profile,5);profile.addView(button("로그아웃",false,()->logout()));card(body,profile);}
     }
     private void logout(){notificationsChecked=false;getPreferences(0).edit().putBoolean("auto_login",false).remove("auth_token").remove("auth_login_id").remove("auth_email").remove("signup_verify_token").remove("recovery_verify_token").apply();page="계정";render();}
@@ -482,13 +487,13 @@ public class MainActivity extends Activity {
         title("회원가입","먼저 이메일을 인증한 뒤 아이디와 비밀번호를 만듭니다.");
         LinearLayout form=column();EditText email=authInput(form,"이메일","이메일 주소",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);email.setText(getPreferences(0).getString("signup_email",""));EditText code=authInput(form,"이메일 인증코드","6자리 코드",InputType.TYPE_CLASS_NUMBER);String verified=getPreferences(0).getString("signup_verify_token","");boolean isVerified=!verified.isEmpty()&&email.getText().toString().trim().equals(getPreferences(0).getString("signup_verified_email",""));
         LinearLayout codeActions=row();codeActions.addView(button("인증코드 받기",false,()->{String value=email.getText().toString().trim();if(!validEmail(value)){email.setError("이메일 주소를 확인해 주세요.");return;}getPreferences(0).edit().putString("signup_email",value).apply();apiRequest("POST","/auth/email/start",json("email",value,"purpose","signup"),false,(data,error)->{if(error!=null)showMessageDialog("인증 요청 실패",error,false);else showEmailRequested(data);});}),new LinearLayout.LayoutParams(0,-2,1));codeActions.addView(button("인증 확인",false,()->{String value=email.getText().toString().trim();apiRequest("POST","/auth/email/verify",json("email",value,"purpose","signup","code",code.getText().toString().trim()),false,(data,error)->{if(error!=null){showMessageDialog("인증 실패",error,false);return;}getPreferences(0).edit().putString("signup_email",value).putString("signup_verified_email",value).putString("signup_verify_token",data.optString("verificationToken","")).apply();showMessageDialog("이메일 인증 완료","아이디와 비밀번호를 입력해 회원가입을 마무리해 주세요.",true);page="회원가입";render();});}),new LinearLayout.LayoutParams(0,-2,1));form.addView(codeActions);
-        EditText id=authInput(form,"아이디","영문, 숫자, 밑줄, 하이픈 · 4~40자",InputType.TYPE_CLASS_TEXT);EditText password=authInput(form,"비밀번호","8자 이상",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);EditText confirm=authInput(form,"비밀번호 확인","비밀번호를 다시 입력",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);id.setVisibility(isVerified?View.VISIBLE:View.GONE);((View)password.getParent()).setVisibility(isVerified?View.VISIBLE:View.GONE);((View)confirm.getParent()).setVisibility(isVerified?View.VISIBLE:View.GONE);gap(form,8);form.addView(button("회원가입 완료",true,()->{String p=password.getText().toString(),c=confirm.getText().toString(),login=id.getText().toString().trim(),value=email.getText().toString().trim(),proof=getPreferences(0).getString("signup_verify_token","");if(!isVerified||proof.isEmpty()||!value.equalsIgnoreCase(getPreferences(0).getString("signup_verified_email",""))){showMessageDialog("이메일 인증 필요","이메일 인증을 먼저 완료해 주세요.",false);return;}if(!login.matches("[A-Za-z0-9_-]{4,40}")){id.setError("아이디는 영문·숫자·밑줄·하이픈 4~40자로 입력해 주세요.");return;}if(p.length()<8){password.setError("비밀번호는 8자 이상 입력해 주세요.");return;}if(!p.equals(c)){confirm.setError("비밀번호가 일치하지 않습니다.");return;}apiRequest("POST","/auth/signup",json("email",value,"loginId",login,"password",p,"passwordConfirm",c,"verificationToken",proof),false,(data,error)->{if(error!=null){showMessageDialog("회원가입 실패",error,false);return;}finishSignup(data,login,value);});}));card(body,form);body.addView(button("로그인 화면으로",false,()->{page="계정";render();}));
+        EditText id=authInput(form,"아이디","영문, 숫자, 밑줄, 하이픈 · 4~40자",InputType.TYPE_CLASS_TEXT);EditText password=authInput(form,"비밀번호","8자 이상",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);EditText confirm=authInput(form,"비밀번호 확인","비밀번호를 다시 입력",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);setInputVisible(id,isVerified);setInputVisible(password,isVerified);setInputVisible(confirm,isVerified);gap(form,8);form.addView(button("회원가입 완료",true,()->{String p=password.getText().toString(),c=confirm.getText().toString(),login=id.getText().toString().trim(),value=email.getText().toString().trim(),proof=getPreferences(0).getString("signup_verify_token","");if(!isVerified||proof.isEmpty()||!value.equalsIgnoreCase(getPreferences(0).getString("signup_verified_email",""))){showMessageDialog("이메일 인증 필요","이메일 인증을 먼저 완료해 주세요.",false);return;}if(!login.matches("[A-Za-z0-9_-]{4,40}")){id.setError("아이디는 영문·숫자·밑줄·하이픈 4~40자로 입력해 주세요.");return;}if(p.length()<8){password.setError("비밀번호는 8자 이상 입력해 주세요.");return;}if(!p.equals(c)){confirm.setError("비밀번호가 일치하지 않습니다.");return;}apiRequest("POST","/auth/signup",json("email",value,"loginId",login,"password",p,"passwordConfirm",c,"verificationToken",proof),false,(data,error)->{if(error!=null){showMessageDialog("회원가입 실패",error,false);return;}finishSignup(data,login,value);});}));card(body,form);body.addView(button("로그인 화면으로",false,()->{page="계정";render();}));
     }
     private void showFindId(){
         title("아이디 찾기","가입한 이메일을 인증한 뒤 아이디를 확인합니다.");LinearLayout form=column();EditText email=authInput(form,"가입 이메일","이메일 주소",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);EditText code=authInput(form,"인증코드","6자리 코드",InputType.TYPE_CLASS_NUMBER);form.addView(button("인증코드 받기",false,()->{String value=email.getText().toString().trim();if(!validEmail(value)){email.setError("이메일 주소를 확인해 주세요.");return;}apiRequest("POST","/auth/email/start",json("email",value,"purpose","find-id"),false,(data,error)->{if(error!=null)showMessageDialog("인증 요청 실패",error,false);else showEmailRequested(data);});}));gap(form,7);form.addView(button("아이디 확인",true,()->{String value=email.getText().toString().trim();apiRequest("POST","/auth/email/verify",json("email",value,"purpose","find-id","code",code.getText().toString().trim()),false,(data,error)->{if(error!=null){showMessageDialog("인증 실패",error,false);return;}apiRequest("POST","/auth/find-id",json("verificationToken",data.optString("verificationToken","")),false,(found,findError)->{if(findError!=null)showMessageDialog("아이디 조회 실패",findError,false);else showMessageDialog("아이디 찾기 완료","가입 아이디: "+found.optString("loginId",""),true);});});}));card(body,form);body.addView(button("계정 화면으로",false,()->{page="계정";render();}));
     }
     private void showPasswordReset(){
-        title("비밀번호 재설정","이메일 인증을 통과하면 새 비밀번호를 설정할 수 있습니다.");LinearLayout form=column();EditText email=authInput(form,"가입 이메일","이메일 주소",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);EditText code=authInput(form,"인증코드","6자리 코드",InputType.TYPE_CLASS_NUMBER);form.addView(button("인증코드 받기",false,()->{String value=email.getText().toString().trim();if(!validEmail(value)){email.setError("이메일 주소를 확인해 주세요.");return;}apiRequest("POST","/auth/email/start",json("email",value,"purpose","reset-password"),false,(data,error)->{if(error!=null)showMessageDialog("인증 요청 실패",error,false);else showEmailRequested(data);});}));gap(form,7);EditText password=authInput(form,"새 비밀번호","8자 이상",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);EditText confirm=authInput(form,"새 비밀번호 확인","새 비밀번호를 다시 입력",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);((View)password.getParent()).setVisibility(View.GONE);((View)confirm.getParent()).setVisibility(View.GONE);form.addView(button("이메일 인증 확인",false,()->{apiRequest("POST","/auth/email/verify",json("email",email.getText().toString().trim(),"purpose","reset-password","code",code.getText().toString().trim()),false,(data,error)->{if(error!=null){showMessageDialog("인증 실패",error,false);return;}getPreferences(0).edit().putString("recovery_verify_token",data.optString("verificationToken","")).apply();((View)password.getParent()).setVisibility(View.VISIBLE);((View)confirm.getParent()).setVisibility(View.VISIBLE);showMessageDialog("인증 완료","새 비밀번호를 입력해 주세요.",true);});}));gap(form,6);form.addView(button("비밀번호 변경",true,()->{String p=password.getText().toString(),c=confirm.getText().toString(),proof=getPreferences(0).getString("recovery_verify_token","");if(proof.isEmpty()){showMessageDialog("이메일 인증 필요","이메일 인증을 먼저 완료해 주세요.",false);return;}if(p.length()<8||!p.equals(c)){confirm.setError(p.length()<8?"비밀번호는 8자 이상 입력해 주세요.":"비밀번호가 일치하지 않습니다.");return;}apiRequest("POST","/auth/password/reset",json("verificationToken",proof,"password",p,"passwordConfirm",c),false,(data,error)->{if(error!=null)showMessageDialog("변경 실패",error,false);else{getPreferences(0).edit().remove("recovery_verify_token").apply();showMessageDialog("비밀번호 변경 완료","새 비밀번호로 로그인해 주세요.",true);page="계정";render();}});}));card(body,form);body.addView(button("계정 화면으로",false,()->{page="계정";render();}));
+        title("비밀번호 재설정","이메일 인증을 통과하면 새 비밀번호를 설정할 수 있습니다.");LinearLayout form=column();EditText email=authInput(form,"가입 이메일","이메일 주소",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);EditText code=authInput(form,"인증코드","6자리 코드",InputType.TYPE_CLASS_NUMBER);form.addView(button("인증코드 받기",false,()->{String value=email.getText().toString().trim();if(!validEmail(value)){email.setError("이메일 주소를 확인해 주세요.");return;}apiRequest("POST","/auth/email/start",json("email",value,"purpose","reset-password"),false,(data,error)->{if(error!=null)showMessageDialog("인증 요청 실패",error,false);else showEmailRequested(data);});}));gap(form,7);EditText password=authInput(form,"새 비밀번호","8자 이상",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);EditText confirm=authInput(form,"새 비밀번호 확인","새 비밀번호를 다시 입력",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);setInputVisible(password,false);setInputVisible(confirm,false);form.addView(button("이메일 인증 확인",false,()->{apiRequest("POST","/auth/email/verify",json("email",email.getText().toString().trim(),"purpose","reset-password","code",code.getText().toString().trim()),false,(data,error)->{if(error!=null){showMessageDialog("인증 실패",error,false);return;}getPreferences(0).edit().putString("recovery_verify_token",data.optString("verificationToken","")).apply();setInputVisible(password,true);setInputVisible(confirm,true);showMessageDialog("인증 완료","새 비밀번호를 입력해 주세요.",true);});}));gap(form,6);form.addView(button("비밀번호 변경",true,()->{String p=password.getText().toString(),c=confirm.getText().toString(),proof=getPreferences(0).getString("recovery_verify_token","");if(proof.isEmpty()){showMessageDialog("이메일 인증 필요","이메일 인증을 먼저 완료해 주세요.",false);return;}if(p.length()<8||!p.equals(c)){confirm.setError(p.length()<8?"비밀번호는 8자 이상 입력해 주세요.":"비밀번호가 일치하지 않습니다.");return;}apiRequest("POST","/auth/password/reset",json("verificationToken",proof,"password",p,"passwordConfirm",c),false,(data,error)->{if(error!=null)showMessageDialog("변경 실패",error,false);else{getPreferences(0).edit().remove("recovery_verify_token").apply();showMessageDialog("비밀번호 변경 완료","새 비밀번호로 로그인해 주세요.",true);page="계정";render();}});}));card(body,form);body.addView(button("계정 화면으로",false,()->{page="계정";render();}));
     }
     private void showHome(){
         title("조용한 일상을 기록해요","소음이 들리는 순간을 남기고, 차분하게 상황을 정리해 보세요.");
@@ -517,7 +522,7 @@ public class MainActivity extends Activity {
         body.addView(text("공동주택 기준 참고",16,INK,true));gap(body,4);LinearLayout standards=column();standards.addView(text("직접충격음  ·  주간 39 / 야간 34 dB(A)",13,INK,true));gap(standards,5);standards.addView(text("최고소음도  ·  주간 57 / 야간 52 dB(A)\n공기전달음  ·  주간 45 / 야간 40 dB(A)",12,MUTED,false));gap(standards,6);standards.addView(text("휴대폰 녹음은 공식 dB(A) 측정 결과가 아니에요.",11,MUTED,false));card(body,standards);
         if(!getPreferences(0).getBoolean("profile_saved",false)){gap(body,2);body.addView(button("♙","내 정보 입력하기",false,()->{page="내 정보";render();}));}
     }
-    private void addMode(LinearLayout modes,String label,boolean selected,Runnable action){TextView chip=text(label,12,selected?Color.WHITE:INK,true);chip.setGravity(Gravity.CENTER);chip.setMinHeight(dp(43));chip.setPadding(dp(7),dp(8),dp(7),dp(8));GradientDrawable shape=new GradientDrawable();shape.setColor(selected?BLUE:CARD);shape.setCornerRadius(dp(15));if(!selected)shape.setStroke(dp(1),BORDER);chip.setBackground(shape);chip.setClickable(true);chip.setFocusable(true);chip.setOnClickListener(v->action.run());LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(46),1);lp.setMargins(dp(3),0,dp(3),0);modes.addView(chip,lp);}
+    private void addMode(LinearLayout modes,String label,boolean selected,Runnable action){Button chip=button(label,selected,action);chip.setTextSize(12);chip.setSelected(selected);ViewCompat.setStateDescription(chip,selected?"선택됨":"선택되지 않음");LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1);lp.setMargins(dp(3),0,dp(3),0);modes.addView(chip,lp);}
 
     private static final String[] FLOW_TITLES={"기록","정리","대화","상담","절차 확인","마무리"};
     private static final String[] FLOW_DESCRIPTIONS={
@@ -532,7 +537,7 @@ public class MainActivity extends Activity {
     private LinearLayout createFlowCarousel(){
         LinearLayout panel=column();panel.setGravity(Gravity.CENTER_HORIZONTAL);pad(panel,14,14,14,14);
         LinearLayout top=row();TextView counter=text("1 / 6",13,BLUE,true);top.addView(counter,new LinearLayout.LayoutParams(0,-2,1));top.addView(text("좌우로 밀어 넘기기",12,MUTED,false));panel.addView(top);gap(panel,8);
-        ViewFlipper flipper=new ViewFlipper(this);flipper.setMeasureAllChildren(true);
+        ViewFlipper flipper=new ViewFlipper(this){@Override public boolean performClick(){super.performClick();return true;}};flipper.setMeasureAllChildren(true);
         for(int i=0;i<FLOW_TITLES.length;i++){
             LinearLayout slide=column();slide.setGravity(Gravity.CENTER_HORIZONTAL);
             FlowIllustration illustration=new FlowIllustration(this,i);slide.addView(illustration,new LinearLayout.LayoutParams(-1,dp(190)));
@@ -543,12 +548,12 @@ public class MainActivity extends Activity {
         panel.addView(flipper,new LinearLayout.LayoutParams(-1,dp(298)));
         TextView dots=text("●  ○  ○  ○  ○  ○",12,BLUE,true);dots.setGravity(Gravity.CENTER);panel.addView(dots);gap(panel,4);
         LinearLayout nav=row();nav.addView(button("‹","이전",false,()->showFlowPage(flipper,counter,dots,(flipper.getDisplayedChild()+FLOW_TITLES.length-1)%FLOW_TITLES.length,-1)),new LinearLayout.LayoutParams(0,-2,1));
-        nav.addView(button("다음","›",false,()->showFlowPage(flipper,counter,dots,(flipper.getDisplayedChild()+1)%FLOW_TITLES.length,1)),new LinearLayout.LayoutParams(0,-2,1));panel.addView(nav);
+        nav.addView(button("›","다음",false,()->showFlowPage(flipper,counter,dots,(flipper.getDisplayedChild()+1)%FLOW_TITLES.length,1)),new LinearLayout.LayoutParams(0,-2,1));panel.addView(nav);
         android.view.GestureDetector gestures=new android.view.GestureDetector(this,new android.view.GestureDetector.SimpleOnGestureListener(){
             @Override public boolean onDown(MotionEvent e){return true;}
             @Override public boolean onFling(MotionEvent start,MotionEvent end,float velocityX,float velocityY){float dx=end.getX()-start.getX();if(Math.abs(dx)<dp(44)||Math.abs(velocityX)<dp(120))return false;int current=flipper.getDisplayedChild();int next=dx<0?(current+1)%FLOW_TITLES.length:(current+FLOW_TITLES.length-1)%FLOW_TITLES.length;showFlowPage(flipper,counter,dots,next,dx<0?1:-1);return true;}
         });
-        flipper.setOnTouchListener((view,event)->{gestures.onTouchEvent(event);return true;});
+        flipper.setOnTouchListener((view,event)->{boolean handled=gestures.onTouchEvent(event);if(event.getAction()==MotionEvent.ACTION_UP&&!handled)view.performClick();return true;});
         return panel;
     }
 
@@ -597,7 +602,7 @@ public class MainActivity extends Activity {
 
     private final class MenuNavIcon extends View{
         private final int icon;private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-        MenuNavIcon(Context context,int index,boolean selected){super(context);icon=index;paint.setColor(selected?BLUE:MUTED);setContentDescription(tabs[index]+" 아이콘");}
+        MenuNavIcon(Context context,int index,boolean selected){super(context);icon=index;paint.setColor(selected?ON_PRIMARY_CONTAINER:MUTED);setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);}
         private void line(Canvas c,float x1,float y1,float x2,float y2){paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(2);paint.setStrokeCap(Paint.Cap.ROUND);c.drawLine(x1,y1,x2,y2,paint);}
         @Override protected void onDraw(Canvas canvas){super.onDraw(canvas);canvas.save();canvas.scale(getWidth()/24f,getHeight()/24f);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(2);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);
             if(icon==0){android.graphics.Path roof=new android.graphics.Path();roof.moveTo(3,11);roof.lineTo(12,4);roof.lineTo(21,11);canvas.drawPath(roof,paint);canvas.drawRoundRect(5,10,19,21,2,2,paint);line(canvas,10,21,10,15);line(canvas,10,15,14,15);line(canvas,14,15,14,21);}
@@ -618,9 +623,16 @@ public class MainActivity extends Activity {
         body.addView(button("▶","저장된 기록 열기",false,()->{page="기록";render();}));
     }
     private String elapsed(){long s=(System.currentTimeMillis()-startedAt)/1000;return String.format(Locale.KOREA,"%02d:%02d",s/60,s%60);}
-    private void startRecording(){if(getPreferences(0).getString("auth_token","").isEmpty()){page="계정";render();showMessageDialog("로그인이 필요합니다","소음측정 원본을 서버에 보존하고 날짜별 일련번호를 발급하려면 먼저 로그인해 주세요.",false);return;}if(Build.VERSION.SDK_INT>=23&&checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},41);return;}if(Build.VERSION.SDK_INT>=23&&checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED){try{requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},42);}catch(Exception ignored){}}place=readPlace();fetchPublicIp();try{File dir=new File(getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC),"MuteLab");if(!dir.exists())dir.mkdirs();String stamp=new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.KOREA).format(new Date());activeFile=File.createTempFile("소음기록_"+stamp+"_",".m4a",dir);recorder=new MediaRecorder();recorder.setAudioSource(MediaRecorder.AudioSource.MIC);recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);recorder.setAudioEncodingBitRate(96000);recorder.setAudioSamplingRate(44100);recorder.setOutputFile(activeFile.getAbsolutePath());recorder.prepare();recorder.start();startedAt=System.currentTimeMillis();page="측정";render();handler.post(tick);}catch(Exception e){if(recorder!=null){try{recorder.release();}catch(Exception ignored){}recorder=null;}new AlertDialog.Builder(this).setMessage("녹음을 시작하지 못했습니다. 마이크 권한과 저장 공간을 확인해 주세요.").setPositiveButton("확인",null).show();}}
+    private void startRecording(){
+        if(getPreferences(0).getString("auth_token","").isEmpty()){page="계정";render();showMessageDialog("로그인이 필요합니다","소음측정 원본을 서버에 보존하고 날짜별 일련번호를 발급하려면 먼저 로그인해 주세요.",false);return;}
+        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},41);return;}
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED){try{requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION},42);}catch(Exception ignored){}}
+        place=readPlace();fetchPublicIp();
+        try{File dir=new File(getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC),"MuteLab");if(!dir.exists())dir.mkdirs();String stamp=new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.KOREA).format(new Date());activeFile=File.createTempFile("소음기록_"+stamp+"_",".m4a",dir);recorder=new MediaRecorder();recorder.setAudioSource(MediaRecorder.AudioSource.MIC);recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);recorder.setAudioEncodingBitRate(96000);recorder.setAudioSamplingRate(44100);recorder.setOutputFile(activeFile.getAbsolutePath());recorder.prepare();recorder.start();startedAt=System.currentTimeMillis();page="측정";render();handler.post(tick);}
+        catch(Exception e){if(recorder!=null){try{recorder.release();}catch(Exception ignored){}recorder=null;}new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setMessage("녹음을 시작하지 못했습니다. 마이크 권한과 저장 공간을 확인해 주세요.").setPositiveButton("확인",null).show();}
+    }
     private void stopRecording(){if(recorder==null)return;long start=startedAt;try{recorder.stop();}catch(Exception ignored){}recorder.release();recorder=null;handler.removeCallbacks(tick);long end=System.currentTimeMillis();File done=activeFile;String id=UUID.randomUUID().toString();String[] data=new String[ROW_MIN];Arrays.fill(data,"");data[0]=id;data[1]=done.getAbsolutePath();data[2]=String.valueOf(start);data[3]=String.valueOf(end);String[]pl=place==null?new String[4]:place;data[22]=pl[0];data[23]=pl[1];data[24]=pl[2];data[25]=pl[3];String ipv=getPreferences(0).getString("env_ip","");data[28]=ipv==null?"":ipv;getPreferences(0).edit().putString("record_"+id,packRecord(data)).apply();analysisId=id;page="분석";render();analyzeRecording(id,done,start,end);if(!getPreferences(0).getString("auth_token","").isEmpty())registerRecording(data,null);}
-    @Override public void onRequestPermissionsResult(int req,String[] p,int[] g){super.onRequestPermissionsResult(req,p,g);if(req==41){if(g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)startRecording();else Toast.makeText(this,"녹음하려면 마이크 권한이 필요합니다.",Toast.LENGTH_LONG).show();}else if(req==42){if(g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)Toast.makeText(this,"위치 권한이 허용되었습니다. 다음 녹음부터 위치가 함께 기록됩니다.",Toast.LENGTH_SHORT).show();else Toast.makeText(this,"위치 권한이 없어 위치 정보는 미상으로 기록됩니다.",Toast.LENGTH_SHORT).show();}}
+    @Override public void onRequestPermissionsResult(int req,String[] p,int[] g){super.onRequestPermissionsResult(req,p,g);if(req==41){if(g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)startRecording();else Toast.makeText(this,"녹음하려면 마이크 권한이 필요합니다.",Toast.LENGTH_LONG).show();}else if(req==42){boolean coarse=checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==PackageManager.PERMISSION_GRANTED,fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;if(fine)Toast.makeText(this,"정확한 위치 권한이 허용되었습니다. 다음 녹음부터 위치가 함께 기록됩니다.",Toast.LENGTH_SHORT).show();else if(coarse)Toast.makeText(this,"대략적인 위치 권한이 허용되었습니다. 다음 녹음에는 가능한 범위에서 위치가 기록됩니다.",Toast.LENGTH_SHORT).show();else Toast.makeText(this,"위치 권한이 없어 위치 정보는 미상으로 기록됩니다.",Toast.LENGTH_SHORT).show();}}
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode==REQUEST_FORM_DOWNLOAD){
@@ -645,12 +657,12 @@ public class MainActivity extends Activity {
             return;
         }
         if(requestCode!=REQUEST_MANAGER_DOCUMENT||resultCode!=RESULT_OK||data==null||data.getData()==null)return;
-        android.net.Uri uri=data.getData();int takeFlags=data.getFlags()&Intent.FLAG_GRANT_READ_URI_PERMISSION;try{getContentResolver().takePersistableUriPermission(uri,takeFlags);}catch(Exception ignored){}getPreferences(0).edit().putString("profile_manager_business_doc_uri",uri.toString()).apply();if(managerDocLabel!=null)managerDocLabel.setText("첨부 파일: "+documentDisplayName(uri));showMessageDialog("첨부 완료","사업자등록증 사본을 이 기기에서 관리하도록 첨부했습니다.",true);
+        android.net.Uri uri=data.getData();try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}getPreferences(0).edit().putString("profile_manager_business_doc_uri",uri.toString()).apply();if(managerDocLabel!=null)managerDocLabel.setText("첨부 파일: "+documentDisplayName(uri));showMessageDialog("첨부 완료","사업자등록증 사본을 이 기기에서 관리하도록 첨부했습니다.",true);
     }
     private String documentDisplayName(android.net.Uri uri){try(android.database.Cursor c=getContentResolver().query(uri,null,null,null,null)){if(c!=null&&c.moveToFirst()){int i=c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);if(i>=0)return c.getString(i);}}catch(Exception ignored){}return uri.getLastPathSegment()==null?"선택한 파일":uri.getLastPathSegment();}
     private void pickManagerDocument(){Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("*/*");intent.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/pdf","image/*"});intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);try{startActivityForResult(intent,REQUEST_MANAGER_DOCUMENT);}catch(Exception e){Toast.makeText(this,"파일 선택기를 열지 못했습니다.",Toast.LENGTH_SHORT).show();}}
-    private String encode(String s){try{return Base64.getEncoder().encodeToString(s.getBytes("UTF-8"));}catch(Exception e){return "";}}
-    private String decode(String s){try{return new String(Base64.getDecoder().decode(s),"UTF-8");}catch(Exception e){return "";}}
+    private String encode(String s){try{return android.util.Base64.encodeToString(s.getBytes("UTF-8"),android.util.Base64.NO_WRAP);}catch(Exception e){return "";}}
+    private String decode(String s){try{return new String(android.util.Base64.decode(s,android.util.Base64.DEFAULT),"UTF-8");}catch(Exception e){return "";}}
     private String packRecord(String[] d){org.json.JSONArray a=new org.json.JSONArray();for(String value:d)a.put(value==null?"":value);return encode(a.toString());}
     private String[] parseRecord(String stored){String value=decode(stored);if(value.startsWith("[")){try{org.json.JSONArray a=new org.json.JSONArray(value);String[] d=new String[a.length()];for(int i=0;i<d.length;i++)d[i]=a.optString(i,"");return d;}catch(Exception ignored){}}return value.split("\\|",-1);}
     private String[] readRecording(String id) {
@@ -697,7 +709,7 @@ public class MainActivity extends Activity {
             finalizeAudioFilename(record);
             if (new File(record[1]).isFile()) list.add(record);
         }
-        list.sort((first, second) -> Long.compare(Long.parseLong(second[2]), Long.parseLong(first[2])));
+        Collections.sort(list,(first, second) -> Long.compare(Long.parseLong(second[2]), Long.parseLong(first[2])));
         return list;
     }
     private String date(long ms){return new SimpleDateFormat("yyyy.MM.dd  HH:mm",Locale.KOREA).format(new Date(ms));}
@@ -1107,7 +1119,7 @@ public class MainActivity extends Activity {
                 report.addView(text("소음측정 일련번호 " + entry[R_RECORD_NO], 12, BLUE, true));
                 boolean synced=isCommitteeSubmissionSynced(entry);
                 boolean accountBlocked=isCommitteeSubmissionAccountBlocked(entry);
-                report.addView(text(synced?"위원회 제출 완료":accountBlocked?"다른 계정의 기록 · 기록을 만든 계정으로 로그인 필요":"위원회 제출 동기화 대기",12,synced?GREEN:Color.rgb(168,76,67),true));
+                report.addView(text(synced?"위원회 제출 완료":accountBlocked?"다른 계정의 기록 · 기록을 만든 계정으로 로그인 필요":"위원회 제출 동기화 대기",12,synced?GREEN:ERROR,true));
                 if(!synced)hasPendingSubmission=true;
                 if (!entry[5].isEmpty()) report.addView(text("발생 추정 장소 · " + entry[5], 13, MUTED, false));
                 if (!entry[6].isEmpty()) report.addView(text("피해 상황 · " + entry[6], 13, MUTED, false));
@@ -1230,8 +1242,10 @@ public class MainActivity extends Activity {
             LocationManager lm=(LocationManager)getSystemService(Context.LOCATION_SERVICE);
             if(lm!=null){
                 net=networkLabel();
-                if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED)return new String[]{"","","",net};
-                Location gps=lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                boolean fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
+                boolean coarse=checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==PackageManager.PERMISSION_GRANTED;
+                if(!fine&&!coarse)return new String[]{"","","",net};
+                Location gps=fine?lm.getLastKnownLocation(LocationManager.GPS_PROVIDER):null;
                 Location viaNet=lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
                 Location best=null;
                 if(gps!=null)best=gps;
@@ -1382,8 +1396,61 @@ public class MainActivity extends Activity {
             panel.addView(text(recordingLevels(d),13,INK,true));
             }
             gap(panel,16);panel.addView(text("시간대별 녹음 파형(1초 단위) · 상대 크기 0–100",14,INK,true));gap(panel,8);
-            final String[] bars=d[11].isEmpty()?new String[0]:d[11].split(",");View chart=new View(this){final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);final Paint label=new Paint(Paint.ANTI_ALIAS_FLAG);{paint.setStrokeWidth(dp(2.5f));paint.setStrokeCap(Paint.Cap.ROUND);label.setTextSize(dp(10));label.setTypeface(Typeface.create(Typeface.DEFAULT,Typeface.BOLD));label.setTextAlign(Paint.Align.CENTER);}@Override protected void onDraw(Canvas canvas){super.onDraw(canvas);int n=Math.min(48,bars.length);if(n==0)return;float[] values=new float[n];int maxIndex=0,minIndex=0;for(int i=0;i<n;i++){try{values[i]=Math.min(100,Math.abs(Float.parseFloat(bars[i])));}catch(Exception ignored){values[i]=0;}if(values[i]>values[maxIndex])maxIndex=i;if(values[i]<values[minIndex])minIndex=i;}if(minIndex==maxIndex&&n>1)minIndex=n-1;float base=getHeight()-dp(3),usable=getHeight()-dp(19),step=getWidth()/(float)(n+1);float mx=base-usable*Math.min(100,Math.max(0f,values[maxIndex]))/100f,ln=base-usable*Math.min(100,Math.max(0f,values[minIndex]))/100f;paint.setColor(Color.rgb(224,86,64));canvas.drawLine(step*(maxIndex+1),base,step*(maxIndex+1),mx,paint);paint.setColor(Color.rgb(34,153,119));canvas.drawLine(step*(minIndex+1),base,step*(minIndex+1),ln,paint);for(int i=0;i<n;i++){float h=Math.max(dp(2),usable*values[i]/100f);paint.setColor(i==maxIndex?Color.rgb(224,86,64):(i==minIndex?Color.rgb(34,153,119):Color.rgb(73,143,205)));canvas.drawLine(step*(i+1),base,step*(i+1),base-h,paint);}float mxT=step*(maxIndex+1),lmT=step*(minIndex+1);String maxL="최고 "+Math.round(values[maxIndex])+" · ≈"+bucketSec(maxIndex)+"초",minL="최저 "+Math.round(values[minIndex])+" · ≈"+bucketSec(minIndex)+"초";label.setColor(Color.rgb(224,86,64));float maxY=Math.max(dp(10),base-usable*values[maxIndex]/100f-dp(4));float tw=label.measureText(maxL)/2f;float txx=Math.max(tw,Math.min(getWidth()-tw,mxT));canvas.drawText(maxL,txx,maxY,label);label.setColor(Color.rgb(34,153,119));float minY=Math.max(dp(10),base-usable*values[minIndex]/100f-dp(4));if(Math.abs(step*(maxIndex-minIndex))<dp(48))minY=Math.max(dp(10),minY-dp(12));float tw2=label.measureText(minL)/2f;float ty2=Math.max(tw2,Math.min(getWidth()-tw2,lmT));canvas.drawText(minL,ty2,minY,label);}};panel.addView(chart,new LinearLayout.LayoutParams(-1,dp(64)));
-            LinearLayout axis=row();TextView from=text("시작  "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date(Long.parseLong(d[2]))),11,MUTED,false);TextView to=text("종료  "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date(Long.parseLong(d[3]))),11,MUTED,false);axis.addView(from,new LinearLayout.LayoutParams(0,-2,1));to.setGravity(Gravity.END);axis.addView(to,new LinearLayout.LayoutParams(0,-2,1));gap(panel,7);panel.addView(axis);
+            final String[] bars=d[11].isEmpty()?new String[0]:d[11].split(",");
+            View chart=new View(this){
+                final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+                final Paint label=new Paint(Paint.ANTI_ALIAS_FLAG);
+                {
+                    paint.setStrokeWidth(dp(2.5f));
+                    paint.setStrokeCap(Paint.Cap.ROUND);
+                    label.setTextSize(12f*getResources().getDisplayMetrics().scaledDensity);
+                    label.setTypeface(Typeface.create(Typeface.DEFAULT,Typeface.BOLD));
+                    label.setTextAlign(Paint.Align.CENTER);
+                }
+                @Override protected void onDraw(Canvas canvas){
+                    super.onDraw(canvas);
+                    int n=Math.min(48,bars.length);
+                    if(n==0)return;
+                    float[] values=new float[n];
+                    int maxIndex=0,minIndex=0;
+                    for(int i=0;i<n;i++){
+                        try{values[i]=Math.min(100,Math.abs(Float.parseFloat(bars[i])));}catch(Exception ignored){values[i]=0;}
+                        if(values[i]>values[maxIndex])maxIndex=i;
+                        if(values[i]<values[minIndex])minIndex=i;
+                    }
+                    if(minIndex==maxIndex&&n>1)minIndex=n-1;
+                    float base=getHeight()-dp(6),usable=Math.max(dp(32),getHeight()-dp(30)),step=getWidth()/(float)(n+1);
+                    float mx=base-usable*Math.min(100,Math.max(0f,values[maxIndex]))/100f;
+                    float ln=base-usable*Math.min(100,Math.max(0f,values[minIndex]))/100f;
+                    paint.setColor(ERROR);
+                    canvas.drawLine(step*(maxIndex+1),base,step*(maxIndex+1),mx,paint);
+                    paint.setColor(GREEN);
+                    canvas.drawLine(step*(minIndex+1),base,step*(minIndex+1),ln,paint);
+                    for(int i=0;i<n;i++){
+                        float h=Math.max(dp(2),usable*values[i]/100f);
+                        paint.setColor(i==maxIndex?ERROR:(i==minIndex?GREEN:MUTED));
+                        canvas.drawLine(step*(i+1),base,step*(i+1),base-h,paint);
+                    }
+                    float mxT=step*(maxIndex+1),lmT=step*(minIndex+1);
+                    String maxL="최고 "+Math.round(values[maxIndex])+" · ≈"+bucketSec(maxIndex)+"초";
+                    String minL="최저 "+Math.round(values[minIndex])+" · ≈"+bucketSec(minIndex)+"초";
+                    label.setColor(ERROR);
+                    float labelTop=label.getTextSize();
+                    float maxY=Math.max(labelTop,base-usable*values[maxIndex]/100f-dp(4));
+                    float tw=label.measureText(maxL)/2f;
+                    float txx=Math.max(tw,Math.min(getWidth()-tw,mxT));
+                    canvas.drawText(maxL,txx,maxY,label);
+                    label.setColor(GREEN);
+                    float minY=Math.max(labelTop,base-usable*values[minIndex]/100f-dp(4));
+                    if(Math.abs(step*(maxIndex-minIndex))<dp(48))minY=Math.max(labelTop,minY-label.getTextSize());
+                    float tw2=label.measureText(minL)/2f;
+                    float ty2=Math.max(tw2,Math.min(getWidth()-tw2,lmT));
+                    canvas.drawText(minL,ty2,minY,label);
+                }
+            };
+            float chartHeightDp=80f*Math.max(1f,getResources().getConfiguration().fontScale);
+            panel.addView(chart,new LinearLayout.LayoutParams(-1,dp(chartHeightDp)));
+            chart.setContentDescription("시간대별 녹음 파형. "+recordingLevels(d));LinearLayout axis=row();TextView from=text("시작  "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date(Long.parseLong(d[2]))),12,MUTED,false);TextView to=text("종료  "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date(Long.parseLong(d[3]))),12,MUTED,false);axis.addView(from,new LinearLayout.LayoutParams(0,-2,1));to.setGravity(Gravity.END);axis.addView(to,new LinearLayout.LayoutParams(0,-2,1));gap(panel,7);panel.addView(axis);
         }
         card(body,panel);gap(body,4);body.addView(button("✎","소음 발생 일지 작성",true,()->editRecord(analysisId)));gap(body,4);body.addView(button("↩","기록 목록으로",false,()->{page="기록";render();}));
     }
@@ -1425,7 +1492,7 @@ public class MainActivity extends Activity {
             more.addView(deleteAction,new LinearLayout.LayoutParams(0,-2,1));
             c.addView(more);
             if(!journalComplete&&!included){gap(c,5);c.addView(text("소음 발생 일지를 저장하면 층간소음으로 보고할 수 있습니다.",11,MUTED,false));}
-            else if(included){gap(c,5);c.addView(text("위원회에 보고 중인 녹음은 삭제할 수 없습니다. 먼저 보고서에서 생략해 주세요.",11,Color.rgb(168,76,67),false));}
+            else if(included){gap(c,5);c.addView(text("위원회에 보고 중인 녹음은 삭제할 수 없습니다. 먼저 보고서에서 생략해 주세요.",12,ERROR,false));}
             else if(omitted){gap(c,5);c.addView(text("위원회 제출이 철회되어 이 기기의 녹음을 삭제할 수 있습니다.",11,MUTED,false));}
             card(body,c);
         }
@@ -1529,7 +1596,7 @@ public class MainActivity extends Activity {
         EditText impact=input("피해 상황과 당시 상황을 적어 주세요",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);impact.setMinLines(3);impact.setGravity(Gravity.TOP);impact.setText(d[6]);form.addView(text("피해 사례",13,INK,true));form.addView(impact);gap(form,8);
         EditText tag=input("예: #야간, #쿵쿵",InputType.TYPE_CLASS_TEXT);tag.setText(d[R_TAG]);form.addView(text("태그 (선택)",13,INK,true));form.addView(tag);gap(form,8);
         // '층간소음 범위' 안내 체크박스는 팝업 최하단 고정
-        CheckBox relevant=new CheckBox(this);relevant.setText("층간소음 범위에 해당할 수 있다고 생각함");relevant.setTextSize(13);relevant.setChecked(d[7].equals("1"));form.addView(relevant);
+        CheckBox relevant=new MaterialCheckBox(this);relevant.setText("층간소음 범위에 해당할 수 있다고 생각함");relevant.setTextSize(13);relevant.setChecked(d[7].equals("1"));form.addView(relevant);
         ScrollView scroll=new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.addView(form);
@@ -1588,16 +1655,16 @@ public class MainActivity extends Activity {
             player.prepare();
             int total=player.getDuration();
             Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-            LinearLayout shell=column();pad(shell,20,18,20,18);GradientDrawable shellBg=new GradientDrawable();shellBg.setColor(PAPER);shellBg.setCornerRadius(dp(26));shellBg.setStroke(dp(1),BORDER);shell.setBackground(shellBg);shell.setElevation(dp(10));
+            LinearLayout shell=column();pad(shell,22,20,22,20);styleSurface(shell,PAPER,28,BORDER);shell.setElevation(dp(6));ViewCompat.setAccessibilityPaneTitle(shell,"녹음 재생");
 
             LinearLayout heading=row();
             TextView note=text("♫",23,BLUE,true);note.setGravity(Gravity.CENTER);styleSurface(note,SAGE,17,BORDER);heading.addView(note,new LinearLayout.LayoutParams(dp(48),dp(48)));
-            LinearLayout headingText=column();pad(headingText,12,0,0,0);headingText.addView(text("녹음 재생",19,INK,true));
+            LinearLayout headingText=column();pad(headingText,12,0,0,0);TextView playerTitle=text("녹음 재생",20,INK,true);ViewCompat.setAccessibilityHeading(playerTitle,true);headingText.addView(playerTitle);
             String kind=record[4].trim().isEmpty()?"소음 측정 기록":record[4];
             TextView subtitle=text(kind,12,MUTED,false);subtitle.setMaxLines(1);headingText.addView(subtitle);
             heading.addView(headingText,new LinearLayout.LayoutParams(0,-2,1));
-            TextView close=text("✕",17,MUTED,true);close.setGravity(Gravity.CENTER);close.setContentDescription("재생 창 닫기");styleSurface(close,BUTTON_ALT,20,BUTTON_BORDER);heading.addView(close,new LinearLayout.LayoutParams(dp(42),dp(42)));
-            shell.addView(heading);close.setOnClickListener(v->{if(playbackDialog!=null)playbackDialog.dismiss();});
+            MaterialButton close=iconButton(R.drawable.ic_close,"재생 창 닫기",false,()->{if(playbackDialog!=null)playbackDialog.dismiss();});heading.addView(close,new LinearLayout.LayoutParams(dp(48),dp(48)));
+            shell.addView(heading);
 
             gap(shell,16);LinearLayout fileCard=column();pad(fileCard,14,12,14,12);styleSurface(fileCard,CARD,16,BORDER);
             playbackRecordId=id;playbackFilename=text(audio.getName(),14,INK,true);playbackFilename.setSingleLine(true);playbackFilename.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);fileCard.addView(playbackFilename);
@@ -1606,22 +1673,20 @@ public class MainActivity extends Activity {
             gap(fileCard,8);playbackLevels=text("",12,INK,false);fileCard.addView(playbackLevels);refreshPlaybackMetadata(record);shell.addView(fileCard);
 
             gap(shell,20);LinearLayout statusRow=row();TextView status=text("재생 중",12,BLUE,true);statusRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));statusRow.addView(pill("원본 음원"));shell.addView(statusRow);
-            playbackSeek=new SeekBar(this);playbackSeek.setMax(Math.max(1,total));playbackSeek.setProgress(0);shell.addView(playbackSeek,new LinearLayout.LayoutParams(-1,dp(38)));
+            playbackSeek=new SeekBar(this);playbackSeek.setMax(Math.max(1,total));playbackSeek.setProgress(0);playbackSeek.setMinimumHeight(dp(48));playbackSeek.setContentDescription("녹음 재생 위치");shell.addView(playbackSeek,new LinearLayout.LayoutParams(-1,dp(48)));
             LinearLayout times=row();playbackElapsed=text(playTime(0),12,INK,true);playbackTime=text(playTime(total),12,MUTED,false);times.addView(playbackElapsed,new LinearLayout.LayoutParams(0,-2,1));playbackTime.setGravity(Gravity.END);times.addView(playbackTime);shell.addView(times);
 
             gap(shell,18);LinearLayout controls=row();controls.setGravity(Gravity.CENTER);
-            TextView back=text("↶ 10초",12,INK,true);back.setGravity(Gravity.CENTER);styleSurface(back,BUTTON_ALT,14,BUTTON_BORDER);controls.addView(back,new LinearLayout.LayoutParams(dp(84),dp(44)));
-            TextView toggle=text("Ⅱ",24,Color.WHITE,true);toggle.setGravity(Gravity.CENTER);toggle.setContentDescription("일시정지");GradientDrawable toggleBg=new GradientDrawable();toggleBg.setColor(BLUE);toggleBg.setShape(GradientDrawable.OVAL);toggle.setBackground(toggleBg);toggle.setElevation(dp(3));LinearLayout.LayoutParams toggleLp=new LinearLayout.LayoutParams(dp(62),dp(62));toggleLp.setMargins(dp(22),0,dp(22),0);controls.addView(toggle,toggleLp);
-            TextView forward=text("10초 ↷",12,INK,true);forward.setGravity(Gravity.CENTER);styleSurface(forward,BUTTON_ALT,14,BUTTON_BORDER);controls.addView(forward,new LinearLayout.LayoutParams(dp(84),dp(44)));shell.addView(controls);
-            back.setClickable(true);back.setFocusable(true);back.setOnClickListener(v->{if(player!=null)player.seekTo(Math.max(0,player.getCurrentPosition()-10000));});
-            forward.setClickable(true);forward.setFocusable(true);forward.setOnClickListener(v->{if(player!=null)player.seekTo(Math.min(player.getDuration(),player.getCurrentPosition()+10000));});
-            toggle.setClickable(true);toggle.setFocusable(true);toggle.setOnClickListener(v->{if(player==null)return;if(player.isPlaying()){player.pause();toggle.setText("▶");toggle.setContentDescription("재생");status.setText("일시정지");}else{player.start();toggle.setText("Ⅱ");toggle.setContentDescription("일시정지");status.setText("재생 중");playbackTick.run();}});
+            Button back=button("10초 이전",false,()->{if(player!=null)player.seekTo(Math.max(0,player.getCurrentPosition()-10000));});controls.addView(back,new LinearLayout.LayoutParams(0,-2,1));
+            MaterialButton toggle=iconButton(R.drawable.ic_pause,"일시정지",true,null);LinearLayout.LayoutParams toggleLp=new LinearLayout.LayoutParams(dp(56),dp(56));toggleLp.setMargins(dp(12),0,dp(12),0);controls.addView(toggle,toggleLp);
+            Button forward=button("10초 다음",false,()->{if(player!=null)player.seekTo(Math.min(player.getDuration(),player.getCurrentPosition()+10000));});controls.addView(forward,new LinearLayout.LayoutParams(0,-2,1));shell.addView(controls);
+            toggle.setOnClickListener(v->{if(player==null)return;if(player.isPlaying()){player.pause();toggle.setIconResource(R.drawable.ic_play);toggle.setContentDescription("재생");TooltipCompat.setTooltipText(toggle,"재생");status.setText("일시정지");}else{player.start();toggle.setIconResource(R.drawable.ic_pause);toggle.setContentDescription("일시정지");TooltipCompat.setTooltipText(toggle,"일시정지");status.setText("재생 중");playbackTick.run();}});
 
-            playbackDialog=dialog;dialog.setContentView(shell);dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(true);
+            playbackDialog=dialog;dialog.setContentView(shell);dialog.setCancelable(true);dialog.setCanceledOnTouchOutside(false);
             playbackSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int progress,boolean fromUser){if(fromUser&&player!=null&&playbackElapsed!=null)playbackElapsed.setText(playTime(progress));}public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){if(player!=null)player.seekTo(s.getProgress());}});
             dialog.setOnDismissListener(ignored->{handler.removeCallbacks(playbackTick);if(player!=null){try{if(player.isPlaying())player.stop();}catch(Exception ignoredStop){}player.release();player=null;}playbackDialog=null;playbackTime=null;playbackElapsed=null;playbackRecordId="";playbackFilename=null;playbackLevels=null;});
             player.setOnCompletionListener(p->{if(playbackDialog!=null)playbackDialog.dismiss();});
-            dialog.show();Window window=dialog.getWindow();if(window!=null){window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);WindowManager.LayoutParams lp=window.getAttributes();lp.width=Math.min(dp(440),getResources().getDisplayMetrics().widthPixels-dp(36));lp.height=WindowManager.LayoutParams.WRAP_CONTENT;lp.gravity=Gravity.CENTER;lp.dimAmount=.5f;window.setAttributes(lp);}
+            dialog.show();Window window=dialog.getWindow();if(window!=null){window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);WindowManager.LayoutParams lp=window.getAttributes();lp.width=Math.min(dp(560),getResources().getDisplayMetrics().widthPixels-dp(32));lp.height=WindowManager.LayoutParams.WRAP_CONTENT;lp.gravity=Gravity.CENTER;lp.dimAmount=.5f;window.setAttributes(lp);}
             player.start();playbackTick.run();
             analyzeOlderRecording(record);
         }catch(Exception e){if(player!=null){try{player.release();}catch(Exception ignored){}player=null;}Toast.makeText(this,"녹음을 재생하지 못했습니다.",Toast.LENGTH_SHORT).show();}
@@ -1696,10 +1761,22 @@ public class MainActivity extends Activity {
         gap(body,8);body.addView(text("동영상",18,INK,true));gap(body,5);body.addView(text("미리보기에서 영상을 열고, 시청 후 완료 여부를 표시하세요.",12,MUTED,false));gap(body,8);body.addView(text("심리편",16,INK,true));gap(body,5);video("셀프해우소 심리편","o71eR5qmi_Q","9:44");video("심리편 추가 영상","0OS2neAZXwE","");gap(body,8);body.addView(text("건축편",16,INK,true));gap(body,5);video("셀프해우소 건축편","NF7fmL68DCA","7:48");video("건축편 추가 영상","XqCvD3siGf0","");video("층간소음 예방 이웃사이2642 AI 공모전","6lzDyBN204A","2:54");
     }    private void openYoutube(String id){try{String url=id.equals("0OS2neAZXwE")?"https://youtu.be/0OS2neAZXwE?si=mJM6Rp-3v6MqL15v":"https://www.youtube.com/watch?v="+id;startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(url)));}catch(Exception e){Toast.makeText(this,"YouTube 영상을 열 수 없습니다.",Toast.LENGTH_SHORT).show();}}
     private void loadThumbnail(String id,ImageView target){new Thread(()->{HttpURLConnection conn=null;try{conn=(HttpURLConnection)new URL("https://i.ytimg.com/vi/"+id+"/hqdefault.jpg").openConnection();conn.setConnectTimeout(7000);conn.setReadTimeout(7000);conn.setInstanceFollowRedirects(true);Bitmap bitmap=BitmapFactory.decodeStream(conn.getInputStream());if(bitmap!=null)runOnUiThread(()->target.setImageBitmap(bitmap));}catch(Exception ignored){}finally{if(conn!=null)conn.disconnect();}}).start();}
-    private void video(String name,String id,String duration){LinearLayout c=column();FrameLayout preview=new FrameLayout(this);ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setBackgroundColor(Color.rgb(32,42,54));image.setContentDescription(name+" YouTube 미리보기");preview.addView(image,new FrameLayout.LayoutParams(-1,-1));TextView play=text("▶",24,Color.WHITE,true);play.setGravity(Gravity.CENTER);GradientDrawable disc=new GradientDrawable();disc.setShape(GradientDrawable.OVAL);disc.setColor(Color.argb(210,31,42,55));play.setBackground(disc);FrameLayout.LayoutParams playLp=new FrameLayout.LayoutParams(dp(54),dp(54),Gravity.CENTER);preview.addView(play,playLp);preview.setOnClickListener(v->openYoutube(id));c.addView(preview,new LinearLayout.LayoutParams(-1,dp(190)));loadThumbnail(id,image);gap(c,9);LinearLayout titleRow=row();titleRow.addView(text(name,15,INK,true),new LinearLayout.LayoutParams(0,-2,1));titleRow.addView(text(duration,12,MUTED,false));c.addView(titleRow);gap(c,5);c.addView(button("▶","YouTube에서 재생",false,()->openYoutube(id)));CheckBox watched=new CheckBox(this);watched.setText("시청 완료");watched.setTextSize(13);watched.setChecked(getPreferences(0).getBoolean("watched_"+id,false));c.addView(watched);TextView state=text(watched.isChecked()?"시청 완료로 저장됨":"아직 시청 완료로 표시되지 않았습니다",11,watched.isChecked()?GREEN:MUTED,false);c.addView(state);watched.setOnCheckedChangeListener((b,checked)->{getPreferences(0).edit().putBoolean("watched_"+id,checked).apply();state.setText(checked?"시청 완료로 저장됨":"아직 시청 완료로 표시되지 않았습니다");state.setTextColor(checked?GREEN:MUTED);});card(body,c);}
-    private CharSequence requiredLabel(String label,boolean required){if(!required)return label;android.text.SpannableString value=new android.text.SpannableString(label+" *");value.setSpan(new android.text.style.ForegroundColorSpan(Color.RED),label.length(),value.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);return value;}
+    private void video(String name,String id,String duration){
+        LinearLayout c=column();FrameLayout preview=new FrameLayout(this);preview.setClickable(true);preview.setFocusable(true);preview.setContentDescription(name+" YouTube에서 재생");
+        ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setBackgroundColor(Color.rgb(32,42,54));image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);preview.addView(image,new FrameLayout.LayoutParams(-1,-1));
+        MaterialButton play=iconButton(R.drawable.ic_play,"재생",true,null);play.setClickable(false);play.setFocusable(false);play.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);preview.addView(play,new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER));
+        preview.setOnClickListener(v->openYoutube(id));c.addView(preview,new LinearLayout.LayoutParams(-1,dp(190)));loadThumbnail(id,image);gap(c,10);
+        LinearLayout titleRow=row();titleRow.addView(text(name,15,INK,true),new LinearLayout.LayoutParams(0,-2,1));titleRow.addView(text(duration,12,MUTED,false));c.addView(titleRow);gap(c,6);c.addView(button("▶","YouTube에서 재생",false,()->openYoutube(id)));
+        CheckBox watched=new MaterialCheckBox(this);watched.setText("시청 완료");watched.setTextSize(13);watched.setChecked(getPreferences(0).getBoolean("watched_"+id,false));c.addView(watched);TextView state=text(watched.isChecked()?"시청 완료로 저장됨":"아직 시청 완료로 표시되지 않았습니다",12,watched.isChecked()?GREEN:MUTED,false);c.addView(state);watched.setOnCheckedChangeListener((b,checked)->{getPreferences(0).edit().putBoolean("watched_"+id,checked).apply();state.setText(checked?"시청 완료로 저장됨":"아직 시청 완료로 표시되지 않았습니다");state.setTextColor(checked?GREEN:MUTED);});card(body,c);
+    }
+    private CharSequence requiredLabel(String label,boolean required){if(!required)return label;android.text.SpannableString value=new android.text.SpannableString(label+" *");value.setSpan(new android.text.style.ForegroundColorSpan(ERROR),label.length(),value.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);return value;}
     private EditText field(LinearLayout f,String label,String key,int type){return field(f,label,key,type,false);}
-    private EditText field(LinearLayout f,String label,String key,int type,boolean required){gap(f,9);TextView caption=text(label,13,INK,true);caption.setTag("profile_label_"+key);caption.setText(requiredLabel(label,required));f.addView(caption);EditText e=input(label,type);e.setTag(key);e.setText(getPreferences(0).getString(key,""));f.addView(e);return e;}
+    private EditText field(LinearLayout f,String label,String key,int type,boolean required){gap(f,10);TextInputLayout container=new TextInputLayout(this,null,com.google.android.material.R.attr.textInputOutlinedStyle);container.setHint(requiredLabel(label,required));container.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);container.setBoxCornerRadii(dp(12),dp(12),dp(12),dp(12));container.setBoxStrokeColor(BLUE);container.setBoxStrokeErrorColor(ColorStateList.valueOf(ERROR));TextInputEditText e=new TextInputEditText(container.getContext());e.setSingleLine(true);e.setTextSize(16);e.setTextColor(INK);e.setInputType(type);e.setMinHeight(dp(56));e.setPaddingRelative(dp(16),dp(10),dp(16),dp(10));e.setTag(key);e.setText(getPreferences(0).getString(key,""));container.addView(e,new LinearLayout.LayoutParams(-1,-2));f.addView(container,new LinearLayout.LayoutParams(-1,-2));return e;}
+    private void setInputEnabled(EditText edit,boolean enabled){edit.setEnabled(enabled);android.view.ViewParent parent=edit.getParent();while(parent instanceof View&&!(parent instanceof TextInputLayout))parent=parent.getParent();if(parent instanceof TextInputLayout)((TextInputLayout)parent).setEnabled(enabled);}
+    private void setControlEnabled(View control,boolean enabled){if(control instanceof EditText)setInputEnabled((EditText)control,enabled);else control.setEnabled(enabled);}
+    private void collectEditTexts(View view,List<EditText> fields){if(view instanceof EditText){fields.add((EditText)view);return;}if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)collectEditTexts(group.getChildAt(i),fields);}}
+    private List<EditText> formFields(ViewGroup form){List<EditText> fields=new ArrayList<>();collectEditTexts(form,fields);return fields;}
+    private String storedFieldValue(EditText field){String value=field.getText().toString().trim();String key=String.valueOf(field.getTag());if("profile_phone".equals(key)||"profile_manager_phone".equals(key))value=value.replaceAll("[^0-9]","");return value;}
     private interface ApartmentSelection { void select(String code, String name); }
 
     private void showApartmentSearch(String currentName, ApartmentSelection selection) {
@@ -1791,6 +1868,11 @@ public class MainActivity extends Activity {
         content.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));
         final android.webkit.WebView web=new android.webkit.WebView(this);
         web.setBackgroundColor(Color.WHITE);
+        web.getSettings().setAllowFileAccess(false);
+        web.getSettings().setAllowContentAccess(false);
+        web.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        web.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
+        web.getSettings().setSupportMultipleWindows(false);
         web.getSettings().setJavaScriptEnabled(true);
         web.getSettings().setDomStorageEnabled(true);
         web.setWebViewClient(new android.webkit.WebViewClient(){
@@ -1836,9 +1918,9 @@ public class MainActivity extends Activity {
     }
     private boolean validEmail(String value){return android.util.Patterns.EMAIL_ADDRESS.matcher(value.trim()).matches();}
     File getSignatureImageFile(){return new File(getFilesDir(),"signature.png");}
-    private void showPolicy(String title,String content){TextView detail=text(content,14,INK,false);detail.setGravity(Gravity.START);ScrollView scroll=new ScrollView(this);scroll.addView(detail);scroll.setPadding(dp(20),dp(12),dp(20),dp(12));new AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton("닫기",null).show();}
-    private LinearLayout consentRow(CheckBox check,String title,String content){LinearLayout line=row();line.addView(check,new LinearLayout.LayoutParams(0,-2,1));TextView detail=text("[상세보기]",14,BLUE,true);detail.setGravity(Gravity.CENTER_VERTICAL);detail.setPadding(dp(10),dp(10),dp(4),dp(10));detail.setContentDescription(title+" 상세보기");detail.setOnClickListener(v->showPolicy(title,content));line.addView(detail,new LinearLayout.LayoutParams(-2,-2));return line;}
-    private void showSignatureEditor(){LinearLayout box=column();box.addView(text("손가락으로 서명을 그려 주세요. PNG로 저장되어 나중에 문서 서명란에 사용됩니다.",13,MUTED,false));gap(box,8);SignatureCanvas drawing=new SignatureCanvas(this);GradientDrawable border=new GradientDrawable();border.setColor(Color.WHITE);border.setCornerRadius(dp(6));border.setStroke(dp(1),BORDER);drawing.setBackground(border);box.addView(drawing,new LinearLayout.LayoutParams(-1,dp(190)));gap(box,4);TextView clear=text("서명 다시 그리기",13,BLUE,true);clear.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);clear.setPadding(dp(8),dp(10),dp(4),dp(8));clear.setClickable(true);clear.setOnClickListener(v->drawing.clear());box.addView(clear);showCustomDialog("서명 이미지 만들기",box,"저장","취소",false,()->{if(!drawing.hasInk()){showMessageDialog("서명 없음","저장하기 전에 서명을 그려 주세요.",false);return false;}try{Bitmap image=drawing.toBitmap();File target=getSignatureImageFile();try(FileOutputStream out=new FileOutputStream(target)){image.compress(Bitmap.CompressFormat.PNG,100,out);}image.recycle();if(signaturePreview!=null){signaturePreview.setImageBitmap(BitmapFactory.decodeFile(target.getAbsolutePath()));signaturePreview.setVisibility(View.VISIBLE);}handler.post(()->showMessageDialog("저장 완료","서명 이미지를 이 기기에 저장했습니다. 문서 양식에서 서명 이미지로 불러올 수 있습니다.",true));return true;}catch(Exception e){showMessageDialog("저장하지 못했습니다","서명 이미지를 저장하지 못했습니다. 저장 공간을 확인해 주세요.",false);return false;}},null);}
+    private void showPolicy(String title,String content){TextView detail=text(content,14,INK,false);detail.setGravity(Gravity.START);ScrollView scroll=new ScrollView(this);scroll.addView(detail);scroll.setPadding(dp(24),dp(12),dp(24),dp(12));new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle(title).setView(scroll).setPositiveButton("닫기",null).show();}
+    private LinearLayout consentRow(CheckBox check,String title,String content){LinearLayout line=row();line.addView(check,new LinearLayout.LayoutParams(0,-2,1));Button detail=button("상세보기",false,()->showPolicy(title,content));detail.setContentDescription(title+" 상세보기");line.addView(detail,new LinearLayout.LayoutParams(-2,-2));return line;}
+    private void showSignatureEditor(){LinearLayout box=column();box.addView(text("손가락으로 서명을 그려 주세요. PNG로 저장되어 나중에 문서 서명란에 사용됩니다.",13,MUTED,false));gap(box,8);SignatureCanvas drawing=new SignatureCanvas(this);drawing.setContentDescription("서명 입력 영역");drawing.setFocusable(true);GradientDrawable border=new GradientDrawable();border.setColor(PAPER);border.setCornerRadius(dp(12));border.setStroke(dp(1),BORDER);drawing.setBackground(border);box.addView(drawing,new LinearLayout.LayoutParams(-1,dp(190)));gap(box,4);TextView clear=text("서명 다시 그리기",13,BLUE,true);clear.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);clear.setMinHeight(dp(48));clear.setPadding(dp(12),dp(8),dp(8),dp(8));clear.setClickable(true);clear.setFocusable(true);clear.setContentDescription("서명 다시 그리기");clear.setOnClickListener(v->{drawing.clear();drawing.announceForAccessibility("서명이 지워졌습니다");});box.addView(clear);showCustomDialog("서명 이미지 만들기",box,"저장","취소",false,()->{if(!drawing.hasInk()){showMessageDialog("서명 없음","저장하기 전에 서명을 그려 주세요.",false);return false;}try{Bitmap image=drawing.toBitmap();File target=getSignatureImageFile();try(FileOutputStream out=new FileOutputStream(target)){image.compress(Bitmap.CompressFormat.PNG,100,out);}image.recycle();if(signaturePreview!=null){signaturePreview.setImageBitmap(BitmapFactory.decodeFile(target.getAbsolutePath()));signaturePreview.setVisibility(View.VISIBLE);}handler.post(()->showMessageDialog("저장 완료","서명 이미지를 이 기기에 저장했습니다. 문서 양식에서 서명 이미지로 불러올 수 있습니다.",true));return true;}catch(Exception e){showMessageDialog("저장하지 못했습니다","서명 이미지를 저장하지 못했습니다. 저장 공간을 확인해 주세요.",false);return false;}},null);}
     private void deleteSignature(){LinearLayout content=column();content.addView(text("저장된 서명 이미지를 삭제합니다. 삭제 후에는 문서 양식에서 서명 이미지를 불러올 수 없습니다.",14,MUTED,false));showCustomDialog("서명 이미지 삭제",content,"삭제","취소",true,()->{getSignatureImageFile().delete();if(signaturePreview!=null){signaturePreview.setImageDrawable(null);signaturePreview.setVisibility(View.GONE);}handler.post(()->showMessageDialog("삭제 완료","저장된 서명 이미지를 삭제했습니다.",true));return true;},null);}
     private void confirmRemoveManagerDocument(){LinearLayout content=column();content.addView(text("첨부된 사업자등록증 사본의 앱 내 연결을 제거합니다. 원본 파일은 문서 앱이나 파일 제공자에 남을 수 있습니다.",14,MUTED,false));showCustomDialog("첨부 파일 제거",content,"제거","취소",true,()->{String saved=getPreferences(0).getString("profile_manager_business_doc_uri","");if(!saved.isEmpty()){try{getContentResolver().releasePersistableUriPermission(android.net.Uri.parse(saved),Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}getPreferences(0).edit().remove("profile_manager_business_doc_uri").apply();}if(managerDocLabel!=null)managerDocLabel.setText("첨부 파일 없음");handler.post(()->showMessageDialog("제거 완료","사업자등록증 사본의 앱 내 첨부를 제거했습니다.",true));return true;},null);}    private void showProfile(){
         if(getPreferences(0).getString("auth_token","").isEmpty()){page="계정";render();return;}
@@ -1848,18 +1930,19 @@ public class MainActivity extends Activity {
 
 // 주소검색 버튼 → 카카오 우편번호 검색 위젯에서 기본주소와 우편번호를 받아 채움
         LinearLayout f=column();
-        EditText accountId=field(f,"회원 아이디","profile_login",InputType.TYPE_CLASS_TEXT);accountId.setText(getPreferences(0).getString("auth_login_id",""));accountId.setEnabled(false);
-        field(f,"이름","profile_name",InputType.TYPE_CLASS_TEXT,true);EditText profileEmail=field(f,"이메일","profile_email",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,true);String accountEmail=getPreferences(0).getString("auth_email","");if(!accountEmail.isEmpty()){profileEmail.setText(accountEmail);profileEmail.setEnabled(false);}applyPhoneFormatting(field(f,"연락처","profile_phone",InputType.TYPE_CLASS_PHONE,true));
+        EditText accountId=field(f,"회원 아이디","profile_login",InputType.TYPE_CLASS_TEXT);accountId.setText(getPreferences(0).getString("auth_login_id",""));setInputEnabled(accountId,false);
+        field(f,"이름","profile_name",InputType.TYPE_CLASS_TEXT,true);EditText profileEmail=field(f,"이메일","profile_email",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,true);String accountEmail=getPreferences(0).getString("auth_email","");if(!accountEmail.isEmpty()){profileEmail.setText(accountEmail);setInputEnabled(profileEmail,false);}applyPhoneFormatting(field(f,"연락처","profile_phone",InputType.TYPE_CLASS_PHONE,true));
         gap(f,9);TextView cap1=text("주소1",13,INK,true);cap1.setTag("profile_label_profile_address");f.addView(cap1);
         EditText address1=input("주소1",InputType.TYPE_CLASS_TEXT);address1.setTag("profile_address");address1.setEnabled(false);address1.setHint("주소검색으로 입력");address1.setText(getPreferences(0).getString("profile_address",""));
-        EditText postal= new EditText(this);postal.setTag("profile_postal");postal.setVisibility(View.GONE);postal.setText(getPreferences(0).getString("profile_postal",""));
+        EditText postal=input("우편번호",InputType.TYPE_CLASS_NUMBER);postal.setTag("profile_postal");postal.setVisibility(View.GONE);postal.setText(getPreferences(0).getString("profile_postal",""));
         LinearLayout addressRow=row();addressRow.addView(address1,new LinearLayout.LayoutParams(0,-2,1));addressRow.addView(button("주소검색",false,()->showAddressSearch(address1,postal)),new LinearLayout.LayoutParams(-2,-2));f.addView(addressRow);gap(f,8);
         // 주소2: 동·호수 상세주소는 직접 입력 + 정확 기재 안내 문구
         EditText address2=field(f,"주소2 (동·호수)","profile_address2",InputType.TYPE_CLASS_TEXT,false);f.addView(text("※ 카카오맵에서 선택한 주소의 동·호수를 정확히 기재해 주세요. (예: 101동 1203호)",12,MUTED,false));
         gap(f,2);TextView postalCaption=text("우편번호",12,MUTED,false);postalCaption.setTag("profile_label_profile_postal");f.addView(postalCaption);postal.setVisibility(View.VISIBLE);postal.setEnabled(false);postal.setHint("주소 검색 시 자동 입력");postal.setTextSize(14);postal.setPadding(dp(12),dp(8),dp(12),dp(8));f.addView(postal);
-        gap(f,14);f.addView(text("서명 이미지",17,INK,true));gap(f,4);f.addView(text("나중에 문서 양식의 서명란에 사용할 서명을 만들어 저장합니다.",12,MUTED,false));signaturePreview=new ImageView(this);signaturePreview.setAdjustViewBounds(true);signaturePreview.setScaleType(ImageView.ScaleType.FIT_CENTER);File signature=getSignatureImageFile();if(signature.exists()){Bitmap image=BitmapFactory.decodeFile(signature.getAbsolutePath());if(image!=null){signaturePreview.setImageBitmap(image);signaturePreview.setVisibility(View.VISIBLE);}else signaturePreview.setVisibility(View.GONE);}else signaturePreview.setVisibility(View.GONE);f.addView(signaturePreview,new LinearLayout.LayoutParams(-1,dp(90)));gap(f,4);f.addView(button("✎","서명 이미지 만들기 / 수정",false,this::showSignatureEditor));gap(f,4);f.addView(button("✕","저장된 서명 삭제",false,this::deleteSignature));
+        gap(f,16);TextView signatureHeading=text("서명 이미지",17,INK,true);ViewCompat.setAccessibilityHeading(signatureHeading,true);f.addView(signatureHeading);gap(f,4);f.addView(text("나중에 문서 양식의 서명란에 사용할 서명을 만들어 저장합니다.",12,MUTED,false));
+        signaturePreview=new ImageView(this);signaturePreview.setAdjustViewBounds(true);signaturePreview.setScaleType(ImageView.ScaleType.FIT_CENTER);signaturePreview.setContentDescription("저장된 서명 이미지 미리보기");File signature=getSignatureImageFile();if(signature.exists()){Bitmap image=BitmapFactory.decodeFile(signature.getAbsolutePath());if(image!=null){signaturePreview.setImageBitmap(image);signaturePreview.setVisibility(View.VISIBLE);}else signaturePreview.setVisibility(View.GONE);}else signaturePreview.setVisibility(View.GONE);f.addView(signaturePreview,new LinearLayout.LayoutParams(-1,dp(96)));gap(f,6);f.addView(button("✎","서명 이미지 만들기 / 수정",false,this::showSignatureEditor));gap(f,4);f.addView(button("✕","저장된 서명 삭제",false,this::deleteSignature));
         gap(f,14);
-        CheckBox has = new CheckBox(this);
+        CheckBox has = new MaterialCheckBox(this);
         has.setText("층간소음 관리주체가 있습니다");
         has.setTextSize(14);
         has.setChecked(getBooleanPreference("profile_manager", false));
@@ -1883,18 +1966,20 @@ public class MainActivity extends Activity {
         applyPhoneFormatting(managerPhone);
         EditText managerEmail = field(f,"전자우편","profile_manager_email",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         View[] managerFields = { house, findHouse, managerName, managerRepresentative, managerPhone, managerEmail };
-        for (View field : managerFields) field.setEnabled(has.isChecked());
+        for (View field : managerFields) setControlEnabled(field,has.isChecked());
         has.setOnCheckedChangeListener((button,checked) -> {
-            for (View field : managerFields) field.setEnabled(checked);
+            for (View field : managerFields) setControlEnabled(field,checked);
         });
         gap(f,10);f.addView(text("사업자등록증 사본 · 선택",13,INK,true));managerDocLabel=text("첨부 파일 없음",12,MUTED,false);String docUri=getPreferences(0).getString("profile_manager_business_doc_uri","");if(!docUri.isEmpty())managerDocLabel.setText("첨부 파일: "+documentDisplayName(android.net.Uri.parse(docUri)));f.addView(managerDocLabel);gap(f,5);f.addView(button("사업자등록증 사본 선택",false,this::pickManagerDocument));gap(f,4);f.addView(button("첨부 파일 제거",false,this::confirmRemoveManagerDocument));
-        gap(f,8);CheckBox terms=new CheckBox(this);terms.setText(requiredLabel("이용약관에 동의합니다",true));terms.setTextSize(13);terms.setChecked(getBooleanPreference("profile_terms",false));f.addView(consentRow(terms,"이용약관",termsText));CheckBox privacy=new CheckBox(this);privacy.setText(requiredLabel("개인정보 이용에 동의합니다",true));privacy.setTextSize(13);privacy.setChecked(getBooleanPreference("profile_privacy",false));f.addView(consentRow(privacy,"개인정보 이용 안내",privacyText));CheckBox push=new CheckBox(this);push.setText("푸시 알림 수신 동의 (선택)");push.setTextSize(13);f.addView(push);CheckBox email=new CheckBox(this);email.setText("이메일 안내 수신 동의 (선택)");email.setTextSize(13);f.addView(email);
+        gap(f,8);CheckBox terms=new MaterialCheckBox(this);terms.setText(requiredLabel("이용약관에 동의합니다",true));terms.setTextSize(13);terms.setChecked(getBooleanPreference("profile_terms",false));f.addView(consentRow(terms,"이용약관",termsText));
+        CheckBox privacy=new MaterialCheckBox(this);privacy.setText(requiredLabel("개인정보 이용에 동의합니다",true));privacy.setTextSize(13);privacy.setChecked(getBooleanPreference("profile_privacy",false));f.addView(consentRow(privacy,"개인정보 이용 안내",privacyText));
+        CheckBox push=new MaterialCheckBox(this);push.setText("푸시 알림 수신 동의 (선택)");push.setTextSize(13);f.addView(push);CheckBox email=new MaterialCheckBox(this);email.setText("이메일 안내 수신 동의 (선택)");email.setTextSize(13);f.addView(email);
         card(body,f);body.addView(button("✓","정보 저장",true,()->{if(!terms.isChecked()||!privacy.isChecked()){Toast.makeText(this,"이용약관과 개인정보 이용 안내를 확인하고 동의해 주세요.",Toast.LENGTH_LONG).show();return;}String residentName=getFieldValue(f,"profile_name").trim(),residentEmail=getFieldValue(f,"profile_email").trim(),residentPhone=getFieldValue(f,"profile_phone").trim();
         String addr1=address1.getText().toString().trim(),addr2=getFieldValue(f,"profile_address2").trim();String residentAddress=addr1.isEmpty()?(addr2.isEmpty()?"":addr2):(addr2.isEmpty()?addr1:addr1+" "+addr2);
         if(residentName.isEmpty()||residentEmail.isEmpty()||residentPhone.isEmpty()){Toast.makeText(this,"별표(*)가 표시된 필수 항목을 입력해 주세요.",Toast.LENGTH_LONG).show();return;}
-        if(residentAddress.isEmpty()){Toast.makeText(this,"주소검색으로 주소를 지정하거나 상세주소(주소2)를 입력해 주세요.",Toast.LENGTH_LONG).show();return;}if(!validEmail(residentEmail)){EditText e=findField(f,"profile_email");if(e!=null){e.setError("이메일 주소 형식을 확인해 주세요.");e.requestFocus();}return;}if(!validManagerPhone(residentPhone)){EditText e=findField(f,"profile_phone");if(e!=null){e.setError("전화번호 형식을 확인해 주세요. 예: 010-1234-5678");e.requestFocus();}return;}String phone=managerPhone.getText().toString().trim(),mail=managerEmail.getText().toString().trim();if(has.isChecked()&&selectedKaptCode[0].isEmpty()){showMessageDialog("공동주택 선택","검색 결과에서 단지명과 주소를 확인해 공동주택을 선택해 주세요.",false);return;}if(has.isChecked()&&!phone.isEmpty()&&!validManagerPhone(phone)){managerPhone.setError("전화번호 형식을 확인해 주세요. 예: 02-1234-5678");managerPhone.requestFocus();return;}if(has.isChecked()&&!mail.isEmpty()&&!validEmail(mail)){managerEmail.setError("전자우편 주소 형식을 확인해 주세요.");managerEmail.requestFocus();return;}android.content.SharedPreferences.Editor ed=getPreferences(0).edit().putBoolean("profile_manager",has.isChecked()).putBoolean("profile_terms",true).putBoolean("profile_privacy",true).putBoolean("profile_saved",true).putString("profile_address",addr1).putString("profile_postal",postal.getText().toString().trim());for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null){String val=e.getText().toString().trim();if("profile_phone".equals(String.valueOf(e.getTag()))||"profile_manager_phone".equals(String.valueOf(e.getTag())))val=val.replaceAll("[^0-9]","");ed.putString(String.valueOf(e.getTag()),val);}}String kaptCode=has.isChecked()?selectedKaptCode[0]:"";ed.putString("profile_kapt_code",kaptCode);JSONObject profileData=new JSONObject();try{for(int i=0;i<f.getChildCount();i++)if(f.getChildAt(i) instanceof EditText){EditText e=(EditText)f.getChildAt(i);if(e.getTag()!=null)profileData.put(String.valueOf(e.getTag()),e.getText().toString().trim());}profileData.put("profile_address",addr1);profileData.put("profile_postal",postal.getText().toString().trim());profileData.put("profile_manager",has.isChecked());profileData.put("profile_kapt_code",kaptCode);}catch(Exception ignored){}apiRequest("PUT","/profile",json("profile",profileData),true,(saved,error)->{if(error!=null){showMessageDialog("저장 실패",error,false);return;}ed.apply();handler.postDelayed(this::syncReportedCommitteeSubmissions,300);showMessageDialog("저장 완료","내 정보와 동의 내역을 회원 계정에 저장했습니다.",true);});}));gap(body,8);body.addView(text("계정 인증과 비밀번호 재설정은 로컬 API에서 처리합니다. 실제 이메일 발송과 계정 탈퇴 기능은 아직 연결되지 않았습니다. 비밀번호 원문은 기기나 데이터베이스에 저장하지 않습니다.",12,MUTED,false));
-    }    private EditText findField(LinearLayout form,String key){for(int i=0;i<form.getChildCount();i++)if(form.getChildAt(i) instanceof EditText){EditText e=(EditText)form.getChildAt(i);if(key.equals(e.getTag()))return e;}return null;}
-    private String getFieldValue(LinearLayout form,String key){for(int i=0;i<form.getChildCount();i++)if(form.getChildAt(i) instanceof EditText){EditText e=(EditText)form.getChildAt(i);if(key.equals(e.getTag()))return e.getText().toString();}return "";}
+        if(residentAddress.isEmpty()){Toast.makeText(this,"주소검색으로 주소를 지정하거나 상세주소(주소2)를 입력해 주세요.",Toast.LENGTH_LONG).show();return;}if(!validEmail(residentEmail)){EditText e=findField(f,"profile_email");if(e!=null){e.setError("이메일 주소 형식을 확인해 주세요.");e.requestFocus();}return;}if(!validManagerPhone(residentPhone)){EditText e=findField(f,"profile_phone");if(e!=null){e.setError("전화번호 형식을 확인해 주세요. 예: 010-1234-5678");e.requestFocus();}return;}String phone=managerPhone.getText().toString().trim(),mail=managerEmail.getText().toString().trim();if(has.isChecked()&&selectedKaptCode[0].isEmpty()){showMessageDialog("공동주택 선택","검색 결과에서 단지명과 주소를 확인해 공동주택을 선택해 주세요.",false);return;}if(has.isChecked()&&!phone.isEmpty()&&!validManagerPhone(phone)){managerPhone.setError("전화번호 형식을 확인해 주세요. 예: 02-1234-5678");managerPhone.requestFocus();return;}if(has.isChecked()&&!mail.isEmpty()&&!validEmail(mail)){managerEmail.setError("전자우편 주소 형식을 확인해 주세요.");managerEmail.requestFocus();return;}android.content.SharedPreferences.Editor ed=getPreferences(0).edit().putBoolean("profile_manager",has.isChecked()).putBoolean("profile_terms",true).putBoolean("profile_privacy",true).putBoolean("profile_saved",true).putString("profile_address",addr1).putString("profile_postal",postal.getText().toString().trim());for(EditText e:formFields(f))if(e.getTag()!=null)ed.putString(String.valueOf(e.getTag()),storedFieldValue(e));String kaptCode=has.isChecked()?selectedKaptCode[0]:"";ed.putString("profile_kapt_code",kaptCode);JSONObject profileData=new JSONObject();try{for(EditText e:formFields(f))if(e.getTag()!=null)profileData.put(String.valueOf(e.getTag()),storedFieldValue(e));profileData.put("profile_address",addr1);profileData.put("profile_postal",postal.getText().toString().trim());profileData.put("profile_manager",has.isChecked());profileData.put("profile_kapt_code",kaptCode);}catch(Exception ignored){}apiRequest("PUT","/profile",json("profile",profileData),true,(saved,error)->{if(error!=null){showMessageDialog("저장 실패",error,false);return;}ed.apply();handler.postDelayed(this::syncReportedCommitteeSubmissions,300);showMessageDialog("저장 완료","내 정보와 동의 내역을 회원 계정에 저장했습니다.",true);});}));gap(body,8);body.addView(text("계정 인증과 비밀번호 재설정은 로컬 API에서 처리합니다. 실제 이메일 발송과 계정 탈퇴 기능은 아직 연결되지 않았습니다. 비밀번호 원문은 기기나 데이터베이스에 저장하지 않습니다.",12,MUTED,false));
+    }    private EditText findField(LinearLayout form,String key){for(EditText e:formFields(form))if(key.equals(e.getTag()))return e;return null;}
+    private String getFieldValue(LinearLayout form,String key){EditText field=findField(form,key);return field==null?"":field.getText().toString();}
 }
 
 

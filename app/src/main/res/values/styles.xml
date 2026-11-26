@@ -1,11 +1,40 @@
 <resources>
-    <style name="MuteLabTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:colorAccent">#3E6051</item>
-        <item name="android:colorControlActivated">#3E6051</item>
-        <item name="android:statusBarColor">#F7F7F2</item>
-        <item name="android:navigationBarColor">#F7F7F2</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowBackground">#F7F7F2</item>
+    <style name="MuteLabTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/mutelab_primary</item>
+        <item name="colorOnPrimary">@color/mutelab_on_primary</item>
+        <item name="colorPrimaryContainer">@color/mutelab_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/mutelab_on_primary_container</item>
+        <item name="colorSecondary">@color/mutelab_secondary</item>
+        <item name="colorOnSecondary">@color/mutelab_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/mutelab_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/mutelab_on_secondary_container</item>
+        <item name="colorTertiary">@color/mutelab_tertiary</item>
+        <item name="colorOnTertiary">@color/mutelab_on_tertiary</item>
+        <item name="colorTertiaryContainer">@color/mutelab_tertiary_container</item>
+        <item name="colorOnTertiaryContainer">@color/mutelab_on_tertiary_container</item>
+        <item name="colorError">@color/mutelab_error</item>
+        <item name="colorOnError">@color/mutelab_on_error</item>
+        <item name="colorErrorContainer">@color/mutelab_error_container</item>
+        <item name="colorOnErrorContainer">@color/mutelab_on_error_container</item>
+        <item name="android:colorBackground">@color/mutelab_surface</item>
+        <item name="colorOnBackground">@color/mutelab_on_surface</item>
+        <item name="colorSurface">@color/mutelab_surface</item>
+        <item name="colorOnSurface">@color/mutelab_on_surface</item>
+        <item name="colorSurfaceVariant">@color/mutelab_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/mutelab_on_surface_variant</item>
+        <item name="colorOutline">@color/mutelab_outline</item>
+        <item name="colorOutlineVariant">@color/mutelab_outline_variant</item>
+        <item name="colorSurfaceContainerLowest">@color/mutelab_surface_container_lowest</item>
+        <item name="colorSurfaceContainerLow">@color/mutelab_surface_container_low</item>
+        <item name="colorSurfaceContainer">@color/mutelab_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/mutelab_surface_container_high</item>
+        <item name="colorSurfaceContainerHighest">@color/mutelab_surface_container_highest</item>
+        <item name="dynamicColorThemeOverlay">@style/ThemeOverlay.Material3.DynamicColors.DayNight</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">@bool/mutelab_is_light_theme</item>
+        <item name="android:windowBackground">@color/mutelab_surface</item>
         <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

@@ -1,0 +1,29 @@
+<resources>
+    <color name="mutelab_primary">#55DBC0</color>
+    <color name="mutelab_on_primary">#00382F</color>
+    <color name="mutelab_primary_container">#005045</color>
+    <color name="mutelab_on_primary_container">#76F8DB</color>
+    <color name="mutelab_secondary">#B1CCC3</color>
+    <color name="mutelab_on_secondary">#1C352E</color>
+    <color name="mutelab_secondary_container">#334B44</color>
+    <color name="mutelab_on_secondary_container">#CCE8DF</color>
+    <color name="mutelab_tertiary">#A7CDDF</color>
+    <color name="mutelab_on_tertiary">#0A3445</color>
+    <color name="mutelab_tertiary_container">#274B5C</color>
+    <color name="mutelab_on_tertiary_container">#C2E8FD</color>
+    <color name="mutelab_error">#FFB4AB</color>
+    <color name="mutelab_on_error">#690005</color>
+    <color name="mutelab_error_container">#93000A</color>
+    <color name="mutelab_on_error_container">#FFDAD6</color>
+    <color name="mutelab_surface">#0F1513</color>
+    <color name="mutelab_on_surface">#DFE4E1</color>
+    <color name="mutelab_surface_variant">#3F4945</color>
+    <color name="mutelab_on_surface_variant">#BEC9C4</color>
+    <color name="mutelab_outline">#89938F</color>
+    <color name="mutelab_outline_variant">#3F4945</color>
+    <color name="mutelab_surface_container_lowest">#0A0F0E</color>
+    <color name="mutelab_surface_container_low">#171D1B</color>
+    <color name="mutelab_surface_container">#1B211F</color>
+    <color name="mutelab_surface_container_high">#252B29</color>
+    <color name="mutelab_surface_container_highest">#303634</color>
+</resources>
