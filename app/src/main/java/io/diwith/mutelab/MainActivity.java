@@ -158,6 +158,7 @@ public class MainActivity extends AppCompatActivity {
     private void pad(View v,int l,int t,int r,int b){v.setPadding(dp(l),dp(t),dp(r),dp(b));}
     private void gap(LinearLayout l,int h){View v=new View(this);l.addView(v,new LinearLayout.LayoutParams(1,dp(h)));}
     private void card(LinearLayout parent,View inner){MaterialCardView surface=new MaterialCardView(this);surface.setCardBackgroundColor(CARD);surface.setRadius(dp(20));surface.setStrokeColor(BORDER);surface.setStrokeWidth(dp(1));surface.setCardElevation(0);LinearLayout box=column();pad(box,18,16,18,16);box.addView(inner);surface.addView(box,new FrameLayout.LayoutParams(-1,-2));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(12);parent.addView(surface,lp);}
+    private void recordCard(LinearLayout parent,View inner,View windowControls){MaterialCardView surface=new MaterialCardView(this);surface.setCardBackgroundColor(CARD);surface.setRadius(dp(20));surface.setStrokeColor(BORDER);surface.setStrokeWidth(dp(1));surface.setCardElevation(0);FrameLayout frame=new FrameLayout(this);LinearLayout box=column();pad(box,18,16,18,16);box.addView(inner);frame.addView(box,new FrameLayout.LayoutParams(-1,-2));FrameLayout.LayoutParams controlsParams=new FrameLayout.LayoutParams(dp(96),dp(48),Gravity.TOP|Gravity.END);controlsParams.topMargin=dp(4);controlsParams.setMarginEnd(dp(4));frame.addView(windowControls,controlsParams);surface.addView(frame,new FrameLayout.LayoutParams(-1,-2));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(12);parent.addView(surface,lp);}
     private void styleSurface(View view,int color,int radius,int stroke){ShapeAppearanceModel model=ShapeAppearanceModel.builder().setAllCornerSizes(dp(radius)).build();MaterialShapeDrawable shape=new MaterialShapeDrawable(model);shape.setFillColor(ColorStateList.valueOf(color));if(stroke!=Color.TRANSPARENT)shape.setStroke(dp(1),ColorStateList.valueOf(stroke));shape.setElevation(0);if(view.isClickable()){MaterialShapeDrawable mask=new MaterialShapeDrawable(model);mask.setFillColor(ColorStateList.valueOf(Color.WHITE));int ripple=themeColor(android.R.attr.colorControlHighlight,Color.argb(28,0,0,0));view.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple),shape,mask));}else view.setBackground(shape);}
     private int iconFor(String value){if(value==null)return 0;switch(value){case "●":return R.drawable.ic_mic;case "■":return R.drawable.ic_stop;case "▶":return R.drawable.ic_play;case "✎":return R.drawable.ic_edit;case "✕":return R.drawable.ic_delete;case "✓":return R.drawable.ic_check;case "▤":return R.drawable.ic_description;case "≡":return R.drawable.ic_list;case "▦":return R.drawable.ic_calendar;case "⬇":return R.drawable.ic_download;case "↗":return R.drawable.ic_open_in_new;case "↩":return R.drawable.ic_arrow_back;case "‹":return R.drawable.ic_chevron_left;case "›":return R.drawable.ic_chevron_right;case "＋":return R.drawable.ic_add;case "☰":return R.drawable.ic_analytics;case "☎":return R.drawable.ic_call;case "♙":return R.drawable.ic_person;default:return 0;}}
     private Button button(String label,boolean primary,Runnable action){return button(null,label,primary,action);}private Button button(String icon,String label,boolean primary,Runnable action){MaterialButton b=new MaterialButton(this,null,com.google.android.material.R.attr.materialButtonStyle);String shown=label==null?(icon==null?"":icon):label;int iconResource=iconFor(label==null?null:icon);b.setText(iconResource==0&&label!=null&&icon!=null?icon+"  "+shown:shown);b.setAllCaps(false);b.setTextSize(14);b.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));b.setTextColor(primary?ON_PRIMARY:ON_SECONDARY_CONTAINER);b.setBackgroundTintList(ColorStateList.valueOf(primary?BLUE:BUTTON_ALT));b.setCornerRadius(dp(24));b.setStrokeWidth(0);b.setInsetTop(0);b.setInsetBottom(0);b.setMinHeight(dp(48));b.setMinimumHeight(dp(48));b.setPadding(dp(18),dp(10),dp(18),dp(10));if(iconResource!=0){b.setIconResource(iconResource);b.setIconTint(ColorStateList.valueOf(primary?ON_PRIMARY:ON_SECONDARY_CONTAINER));b.setIconPadding(dp(8));b.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);}b.setContentDescription(shown);b.setOnClickListener(v->action.run());return b;}
@@ -1472,11 +1473,11 @@ public class MainActivity extends AppCompatActivity {
             boolean collapsed=collapsedLogCards.contains(d[0]);
             boolean canDelete=!included&&!busy;
             LinearLayout c=column();
-            LinearLayout header=row();header.setGravity(Gravity.TOP);
             LinearLayout summary=column();
+            summary.setPaddingRelative(0,0,dp(96),0);summary.setMinimumHeight(dp(48));
             summary.addView(text(date(Long.parseLong(d[2])),16,INK,true));gap(summary,4);
             summary.addView(text(d[R_RECORD_NO].isEmpty()?new File(d[1]).getName():"소음측정 일련번호 · "+d[R_RECORD_NO],11,d[R_RECORD_NO].isEmpty()?MUTED:BLUE,true));
-            header.addView(summary,new LinearLayout.LayoutParams(0,-2,1));
+            c.addView(summary,new LinearLayout.LayoutParams(-1,-2));
             LinearLayout windowControls=new LinearLayout(this);windowControls.setOrientation(LinearLayout.HORIZONTAL);windowControls.setGravity(Gravity.TOP|Gravity.END);
             MaterialButton collapseAction=windowControlButton(collapsed?R.drawable.ic_expand_more:R.drawable.ic_minimize,collapsed?"기록 펼치기":"기록 최소화",null);
             ViewCompat.setStateDescription(collapseAction,collapsed?"최소화됨":"펼쳐짐");
@@ -1486,8 +1487,6 @@ public class MainActivity extends AppCompatActivity {
             closeAction.setIconTint(ColorStateList.valueOf(canDelete?ERROR:MUTED));
             closeAction.setContentDescription(canDelete?"녹음 기록 삭제":"녹음 기록 삭제 불가 · "+(included?"층간소음보고에서 생략한 후 삭제 가능":"보고 처리 중"));
             windowControls.addView(closeAction,new LinearLayout.LayoutParams(dp(48),dp(48)));
-            header.addView(windowControls,new LinearLayout.LayoutParams(-2,dp(48)));
-            c.addView(header);
             LinearLayout detail=column();gap(detail,8);
             String envL=envSummary(d);if(!envL.isEmpty()){detail.addView(text("녹음 환경 · "+envL,11,MUTED,false));}
             if(!d[4].isEmpty()){gap(detail,6);detail.addView(text("종류: "+d[4]+(d[5].isEmpty()?"":" · 장소: "+d[5]),13,INK,false));}
@@ -1523,7 +1522,7 @@ public class MainActivity extends AppCompatActivity {
                 ViewCompat.setStateDescription(collapseAction,minimize?"최소화됨":"펼쳐짐");
                 collapseAction.announceForAccessibility(minimize?"기록을 최소화했습니다":"기록을 펼쳤습니다");
             });
-            card(body,c);
+            recordCard(body,c,windowControls);
         }
     }
     private void openAnalysis(String[] data) {

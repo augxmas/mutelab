@@ -2,7 +2,7 @@ apply plugin: 'com.android.application'
 android {
     namespace 'io.diwith.mutelab'
     compileSdk 36
-    defaultConfig { applicationId 'io.diwith.mutelab'; minSdk 23; targetSdk 36; versionCode 27; versionName '1.11.2' }
+    defaultConfig { applicationId 'io.diwith.mutelab'; minSdk 23; targetSdk 36; versionCode 28; versionName '1.11.3' }
 }
 
 dependencies {
