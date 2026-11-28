@@ -17,8 +17,8 @@ body {
 
 select {
   appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, #476055 50%),
-    linear-gradient(135deg, #476055 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, #416085 50%),
+    linear-gradient(135deg, #416085 50%, transparent 50%);
   background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%;
   background-repeat: no-repeat;
   background-size: 5px 5px, 5px 5px;
@@ -51,9 +51,9 @@ select {
 }
 
 input[readonly] {
-  border-color: #d7e2dc;
-  background: #f2f6f4;
-  color: #52645c;
+  border-color: #cedcf0;
+  background: #eff5fd;
+  color: #465d7b;
   cursor: default;
 }
 
@@ -61,7 +61,7 @@ input[readonly] {
   min-width: 0;
   font-size: .91rem;
   font-weight: 700;
-  color: #304139;
+  color: #2b405d;
 }
 
 .file-label {
@@ -87,10 +87,10 @@ input[readonly] {
   min-height: 124px;
   margin-top: .38rem;
   padding: 1rem;
-  border: 2px dashed #a8bdb2;
+  border: 2px dashed #a6bfdc;
   border-radius: 10px;
-  background: #f8fbf9;
-  color: #385448;
+  background: #f5f9ff;
+  color: #31547e;
   text-align: center;
   cursor: pointer;
   transition: border-color .16s ease, background-color .16s ease, transform .16s ease;
@@ -105,12 +105,12 @@ input[readonly] {
 .file-drop-zone:hover,
 .file-drop-zone.is-dragover,
 .file-drop-zone:focus-visible {
-  border-color: var(--green);
+  border-color: var(--blue);
   background: var(--soft);
 }
 
 .file-drop-zone:focus-visible {
-  outline: 3px solid #9ccab6;
+  outline: 3px solid #8ab9f3;
   outline-offset: 2px;
 }
 
@@ -120,8 +120,8 @@ input[readonly] {
 
 .file-drop-zone.has-file {
   border-style: solid;
-  border-color: var(--green);
-  background: #eef7f2;
+  border-color: var(--blue);
+  background: #edf5ff;
 }
 
 .file-drop-zone[aria-invalid="true"] {
@@ -136,7 +136,7 @@ input[readonly] {
   height: 34px;
   border-radius: 50%;
   background: var(--soft);
-  color: var(--green);
+  color: var(--blue);
   font-size: 1.25rem;
   line-height: 1;
 }
@@ -151,7 +151,7 @@ input[readonly] {
 }
 
 .file-status.success {
-  color: var(--green);
+  color: var(--blue);
 }
 
 .file-status.error {
@@ -161,9 +161,9 @@ input[readonly] {
 .committee-notifications {
   margin-top: 1.25rem;
   padding: 1.1rem 1.25rem;
-  border: 1px solid #b9d4c7;
+  border: 1px solid #b7cff0;
   border-radius: 14px;
-  background: #f4faf7;
+  background: #f3f8ff;
 }
 
 .committee-notification-head,
@@ -181,7 +181,7 @@ input[readonly] {
 .notification-count {
   padding: .22rem .6rem;
   border-radius: 999px;
-  background: var(--green);
+  background: var(--blue);
   color: #fff;
   font-size: .78rem;
   font-weight: 800;
@@ -195,7 +195,7 @@ input[readonly] {
 
 .committee-notification {
   padding: .85rem 1rem;
-  border-left: 4px solid var(--green);
+  border-left: 4px solid var(--blue);
   border-radius: 9px;
   background: #fff;
 }
@@ -206,7 +206,7 @@ input[readonly] {
 
 .committee-notification p {
   margin: .2rem 0;
-  color: #40554b;
+  color: #375170;
   font-size: .9rem;
 }
 
@@ -255,7 +255,7 @@ input[readonly] {
   min-height: 72px;
   padding: .8rem 1.5rem;
   border-top: 1px solid var(--line);
-  box-shadow: 0 -10px 24px rgba(22, 57, 44, .06);
+  box-shadow: 0 -10px 24px rgba(23, 59, 104, .06);
 }
 
 .signup-dialog-footer .message {

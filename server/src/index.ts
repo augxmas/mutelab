@@ -6,9 +6,10 @@ import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { executeSql, initializeDatabase, querySql, sqlString, memberDataKey } from './db';
+import { normalizeRoomNumber } from './room-number';
 import { sendVerificationEmail, type EmailPurpose } from './verification-email';
 import { committeeAuth, initializeCommittee } from './committee-auth';
-import { cleanupCommitteeSubmissionArtifacts, committeeDataRouter, notifyRecordingIntegrityMismatch, readResidentNotification,
+import { committeeDataRouter, notifyRecordingIntegrityMismatch, readResidentNotification,
   residentCommitteeContacts, residentNotifications, retryPendingNotificationEmail, submitCommitteeIncident,
   uploadCommitteeSubmissionAudio, withdrawCommitteeIncident } from './committee-data';
 import { initializeCommitteeDecisionNotifications, retryPendingCommitteeDecisionEmail } from './committee-decision-notifications';
@@ -121,11 +122,21 @@ app.post('/api/auth/email/start', async (req, res) => {
   const purpose = req.body?.purpose as EmailPurpose;
   const ip = req.ip ?? 'unknown';
   if (!validEmail(email) || !['signup', 'find-id', 'reset-password', 'committee-signup'].includes(purpose)) { fail(res, 400, '이메일 주소와 인증 목적을 확인해 주세요.'); return; }
-  if (rateLimit(`email-ip:${ip}`, 12, 10 * 60_000) || rateLimit(`email:${email}`, 1, 45_000)) { fail(res, 429, '요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.'); return; }
+  const ipKey = `email-ip:${ip}`, emailKey = `email:${email}`;
+  const ipLimited = rateLimit(ipKey, 12, 10 * 60_000);
+  if (ipLimited || rateLimit(emailKey, 1, 45_000)) {
+    const window = requestWindows.get(ipLimited ? ipKey : emailKey);
+    const wait = Math.max(1, Math.ceil(((window?.start ?? Date.now()) + (ipLimited ? 600_000 : 45_000) - Date.now()) / 1000));
+    res.set('Retry-After', String(wait));
+    fail(res, 429, `요청이 너무 잦습니다. ${wait}초 후 다시 시도해 주세요.`);
+    return;
+  }
   try {
     const existing = await lookupUserByEmail(email);
     if (purpose === 'signup' && existing) { fail(res, 409, '이미 가입된 이메일입니다. 로그인하거나 비밀번호를 재설정해 주세요.'); return; }
-    if (purpose === 'committee-signup' && await committeeEmailExists(email)) { fail(res, 409, '이미 위원회에 등록된 이메일입니다.'); return; }
+    if (purpose === 'committee-signup' && await committeeEmailExists(email)) {
+      fail(res, 409, '이미 위원으로 등록했거나 승인 대기 중인 이메일입니다. 같은 이메일로 다시 신청할 수 없습니다.'); return;
+    }
     const message = `이메일 인증코드를 요청했습니다. ${codeTtlMinutes}분 안에 받은 코드를 입력해 주세요.`;
     if (['find-id', 'reset-password'].includes(purpose) && !existing) { res.json({ message }); return; }
     const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -397,8 +408,8 @@ app.put('/api/recordings/:recordNo/journal', auth, async (req: RequestWithUser, 
   const recordNo = String(req.params.recordNo ?? '');
   const journal = req.body?.journal;
   const userId = Number(req.user!.sub);
-  const json = JSON.stringify(journal);
-  if (!/^\d{8}_\d{4}$/.test(recordNo) || !journal || typeof journal !== 'object' || Array.isArray(journal) || json.length > 3_500) { fail(res, 400, '발생 일지 내용을 확인해 주세요.'); return; }
+  if (!/^\d{8}_\d{4}$/.test(recordNo) || !journal || typeof journal !== 'object' || Array.isArray(journal) || JSON.stringify(journal).length > 3_500) { fail(res, 400, '발생 일지 내용을 확인해 주세요.'); return; }
+  const json = JSON.stringify({ ...journal, otherHo: normalizeRoomNumber(journal.otherHo) });
   try {
     await executeSql(`
       IF NOT EXISTS (SELECT 1 FROM dbo.NoiseRecordings WHERE RecordNo=${sqlLiteral(recordNo)} AND UserId=${userId}) THROW 51012, 'Recording not found.', 1;
@@ -502,6 +513,19 @@ app.use('/api/committee', committeeAuth({
 }));
 app.use('/api/committee', committeeDataRouter(jwtSecret, emailFrom));
 
+const landingDirectory = path.resolve(__dirname, '../landing');
+app.get('/', (_req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(landingDirectory, 'index.html'));
+});
+app.get(['/robots.txt', '/sitemap.xml'], (req, res) => {
+  res.sendFile(path.join(landingDirectory, path.basename(req.path)));
+});
+app.get(['/landing', '/landing/', '/landing/index.html'], (_req, res) => {
+  res.redirect(301, 'https://mutelab.kr/');
+});
+app.use('/landing', express.static(landingDirectory, { index: false }));
+
 const committeeDirectory = path.resolve(__dirname, '../committee');
 const sendCommitteeIndex: express.RequestHandler = (_req, res) => {
   res.set('Cache-Control', 'no-cache');
@@ -513,6 +537,9 @@ app.use('/committee', express.static(committeeDirectory, {
 }));
 
 const supervisorDirectory = path.resolve(__dirname, '../supervisor');
+app.use('/supervisor', helmet.contentSecurityPolicy({
+  directives: { imgSrc: ["'self'", 'data:', 'blob:'], mediaSrc: ["'self'", 'blob:'], frameSrc: ["'self'", 'blob:'] },
+}));
 const sendSupervisorIndex: express.RequestHandler = (_req, res) => {
   res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow, noarchive' });
   res.sendFile(path.join(supervisorDirectory, 'index.html'));
@@ -535,13 +562,6 @@ async function start(): Promise<void> {
   await initializeDatabase();
   await initializeCommittee();
   await initializeCommitteeDecisionNotifications();
-  const cleanupStagedCommitteeAudio = async () => {
-    try { await cleanupCommitteeSubmissionArtifacts(); }
-    catch (error) { console.error('committee artifact cleanup error:', error instanceof Error ? error.message : error); }
-  };
-  await cleanupStagedCommitteeAudio();
-  const artifactCleanupTimer = setInterval(cleanupStagedCommitteeAudio, 60 * 60_000);
-  artifactCleanupTimer.unref();
   let notificationEmailWorkerRunning = false;
   const deliverPendingNotificationEmails = async () => {
     if (notificationEmailWorkerRunning) return;

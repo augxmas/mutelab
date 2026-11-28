@@ -99,6 +99,7 @@ async function main(): Promise<void> {
         .input('ApplicationId', applicationId)
         .input('ReviewedDocumentSha256', documentSha256)
         .input('ReviewNote', note)
+        .input('MemberDataKey', memberDataKey)
         .execute('dbo.ApproveCommitteeApplication');
       console.log(JSON.stringify({ status: 'APPROVED', ...result.recordset[0] }, null, 2));
       return;
@@ -106,6 +107,7 @@ async function main(): Promise<void> {
     const result = await pool.request()
       .input('ApplicationId', applicationId)
       .input('ReviewNote', note)
+      .input('MemberDataKey', memberDataKey)
       .execute('dbo.RejectCommitteeApplication');
     console.log(JSON.stringify({ status: 'REJECTED', ...result.recordset[0] }, null, 2));
   } finally {

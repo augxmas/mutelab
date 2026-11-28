@@ -3,11 +3,18 @@ import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import helmet from 'helmet';
 import sql, { ConnectionPool } from 'mssql';
+import bcrypt from 'bcryptjs';
+import QRCode from 'qrcode';
+import { committeeDocumentType } from './committee-document-type';
+import { decryptInquiryImage, formatInquiry, type InquiryRow } from './committee-inquiry-files';
+import { matchingOtpStep, otpSetupKey } from './supervisor-otp';
 
 type JsonObject = Record<string, unknown>;
 type BrowserSession = { ip: string; userAgent: string; expiresAt: number; reviewedDocuments: Map<number, string> };
 type WindowState = { startedAt: number; count: number };
 type PendingApplication = { ApplicationId: number; DocumentSha256: string };
+type SupervisorAccount = { EmailHash: string; PasswordHash: string; OtpSecretCipher: Buffer | null; LastOtpStep: number | string };
+type Enrollment = { account: SupervisorAccount; secret: Buffer; ip: string; userAgent: string; expiresAt: number };
 
 const host = process.env.SUPERVISOR_HOST ?? '127.0.0.1';
 const port = Number(process.env.SUPERVISOR_PORT ?? 3102);
@@ -42,10 +49,25 @@ function getPool(): Promise<ConnectionPool> {
 }
 
 const sessions = new Map<string, BrowserSession>();
+const enrollments = new Map<string, Enrollment>();
 const rateWindows = new Map<string, WindowState>();
 const sessionTtlMs = 30 * 60_000;
+const otpKey = crypto.createHash('sha256').update(memberDataKey).update(':supervisor-otp:v1').digest();
+
+function encryptOtp(secret: Buffer): Buffer {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', otpKey, iv);
+  return Buffer.concat([iv, cipher.update(secret), cipher.final(), cipher.getAuthTag()]);
+}
+
+function decryptOtp(value: Buffer): Buffer {
+  const decipher = crypto.createDecipheriv('aes-256-gcm', otpKey, value.subarray(0, 12));
+  decipher.setAuthTag(value.subarray(-16));
+  return Buffer.concat([decipher.update(value.subarray(12, -16)), decipher.final()]);
+}
 
 function cleanSessions(now = Date.now()): void {
+  for (const [token, enrollment] of enrollments) if (enrollment.expiresAt <= now) enrollments.delete(token);
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
   if (sessions.size > 10_000) for (const token of sessions.keys()) {
     sessions.delete(token); if (sessions.size <= 10_000) break;
@@ -95,7 +117,9 @@ function requireSession(req: Request, res: Response, next: NextFunction): void {
     if (token) sessions.delete(token);
     res.status(401).json({ error: '관리 화면 연결이 만료되었습니다. 화면을 새로고침해 주세요.' }); return;
   }
-  session.expiresAt = Date.now() + sessionTtlMs;
+  if (req.path !== '/notifications' || req.query.passive !== '1') {
+    session.expiresAt = Date.now() + sessionTtlMs;
+  }
   next();
 }
 
@@ -141,13 +165,6 @@ function decryptDocument(envelope: Buffer): Buffer {
   return Buffer.concat([decipher.update(envelope.subarray(12, envelope.length - 16)), decipher.final()]);
 }
 
-function documentMime(document: Buffer): { mime: string; extension: string } {
-  if (document.subarray(0, 5).toString('ascii') === '%PDF-') return { mime: 'application/pdf', extension: 'pdf' };
-  if (document.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return { mime: 'image/png', extension: 'png' };
-  if (document.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))) return { mime: 'image/jpeg', extension: 'jpg' };
-  throw new Error('Unsupported committee document type.');
-}
-
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
@@ -170,18 +187,174 @@ app.get('/api/supervisor/health', async (_req, res) => {
   }
 });
 
-app.get('/api/supervisor/session', (req, res) => {
-  if (!browserRequestAllowed(req) || limited(`session:${requestIp(req)}`, 30, 10 * 60_000)) {
-    res.status(403).json({ error: '관리 화면 연결을 시작할 수 없습니다.' }); return;
-  }
+function issueSession(req: Request, res: Response): void {
   cleanSessions();
   const token = crypto.randomBytes(32).toString('base64url');
   sessions.set(token, { ip: requestIp(req), userAgent: req.get('user-agent') ?? '', expiresAt: Date.now() + sessionTtlMs,
     reviewedDocuments: new Map<number, string>() });
   res.json({ sessionToken: token, expiresInSeconds: sessionTtlMs / 1000 });
+}
+
+const authJson = express.json({ limit: '8kb', type: 'application/json' });
+function allowAuthRequest(req: Request, res: Response, rateKey: string): boolean {
+  if (!browserRequestAllowed(req, true)) {
+    res.status(403).json({ error: '허용되지 않은 요청입니다.' }); return false;
+  }
+  if (limited(`auth:${requestIp(req)}`, 35, 10 * 60_000)
+    || (rateKey && limited(`auth-account:${rateKey}`, 10, 10 * 60_000))) {
+    res.status(429).json({ error: '인증 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.' }); return false;
+  }
+  return true;
+}
+
+app.post('/api/supervisor/login', authJson, async (req, res) => {
+  const body = asObject(req.body);
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase().slice(0, 254) : '';
+  if (!allowAuthRequest(req, res, '')) return;
+  const password = typeof body.password === 'string' ? body.password : '';
+  const pool = await getPool();
+  const { recordset: [account] } = await pool.request().input('email', email).input('key', memberDataKey)
+    .query<SupervisorAccount>(`SELECT EmailHash,PasswordHash,OtpSecretCipher,LastOtpStep FROM dbo.SupervisorAccounts
+      WHERE EmailHash=dbo.MemberLookupHash(@email,@key)`);
+  if (account && limited(`auth-account:${account.EmailHash}`, 10, 10 * 60_000)) {
+    return res.status(429).json({ error: '인증 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.' });
+  }
+  if (!account || !password || Buffer.byteLength(password) > 72 || !await bcrypt.compare(password, account.PasswordHash)) {
+    return res.status(401).json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+  }
+  if (!account.OtpSecretCipher) {
+    const secret = crypto.randomBytes(20);
+    const setupKey = otpSetupKey(secret);
+    const issuer = 'MuteLab Supervisor';
+    const parameters = new URLSearchParams({ secret: setupKey, issuer, algorithm: 'SHA1', digits: '6', period: '30' });
+    const uri = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(email)}?${parameters}`;
+    const qrCode = await QRCode.toDataURL(uri, { width: 260, margin: 4 });
+    cleanSessions();
+    for (const [token, enrollment] of enrollments) if (enrollment.account.EmailHash === account.EmailHash) enrollments.delete(token);
+    const token = crypto.randomBytes(32).toString('base64url');
+    enrollments.set(token, { account, secret, ip: requestIp(req), userAgent: req.get('user-agent') ?? '',
+      expiresAt: Date.now() + 5 * 60_000 });
+    return res.json({ enrollmentToken: token, setupKey, qrCode });
+  }
+  const step = matchingOtpStep(decryptOtp(account.OtpSecretCipher), String(body.code ?? ''), Number(account.LastOtpStep));
+  if (step === null) {
+    return res.status(401).json({ code: 'OTP_REQUIRED', error: 'Google OTP의 새 6자리 코드를 입력해 주세요.' });
+  }
+  const { recordset: [updated] } = await pool.request().input('emailHash', account.EmailHash).input('hash', account.PasswordHash)
+    .input('step', step).query<{ Updated: number }>(`
+      UPDATE dbo.SupervisorAccounts SET LastOtpStep=@step WHERE EmailHash=@emailHash AND PasswordHash=@hash AND LastOtpStep<@step;
+      SELECT @@ROWCOUNT AS Updated;`);
+  if (updated?.Updated !== 1) return res.status(401).json({ code: 'OTP_REQUIRED', error: '새 인증코드로 다시 시도해 주세요.' });
+  issueSession(req, res);
+});
+
+app.post('/api/supervisor/enroll', authJson, async (req, res) => {
+  const body = asObject(req.body);
+  const token = typeof body.enrollmentToken === 'string' ? body.enrollmentToken : '';
+  const enrollment = enrollments.get(token);
+  if (!allowAuthRequest(req, res, enrollment?.account.EmailHash ?? '')) return;
+  if (!enrollment || enrollment.expiresAt <= Date.now() || enrollment.ip !== requestIp(req)
+      || enrollment.userAgent !== (req.get('user-agent') ?? '')) {
+    return res.status(401).json({ error: '등록 시간이 만료되었습니다. 다시 로그인해 주세요.' });
+  }
+  const password = typeof body.newPassword === 'string' ? body.newPassword : '';
+  if (password.length < 10 || Buffer.byteLength(password) > 72 || password !== body.confirmPassword) {
+    return res.status(400).json({ error: '새 비밀번호를 10자 이상 입력하고 확인란과 일치시켜 주세요.' });
+  }
+  const step = matchingOtpStep(enrollment.secret, String(body.code ?? ''), -1);
+  if (step === null) return res.status(400).json({ error: 'Google OTP의 6자리 코드를 확인해 주세요.' });
+  if (await bcrypt.compare(password, enrollment.account.PasswordHash)) {
+    return res.status(400).json({ error: '초기 비밀번호와 다른 비밀번호를 입력해 주세요.' });
+  }
+  const hash = await bcrypt.hash(password, 12);
+  const pool = await getPool();
+  if (enrollments.get(token) !== enrollment || enrollment.expiresAt <= Date.now()) {
+    return res.status(401).json({ error: '등록 시간이 만료되었습니다. 다시 로그인해 주세요.' });
+  }
+  enrollments.delete(token);
+  const { recordset: [updated] } = await pool.request().input('emailHash', enrollment.account.EmailHash)
+    .input('oldHash', enrollment.account.PasswordHash).input('hash', hash).input('secret', encryptOtp(enrollment.secret))
+    .input('step', step).query<{ Updated: number }>(`
+      UPDATE dbo.SupervisorAccounts SET PasswordHash=@hash,OtpSecretCipher=@secret,LastOtpStep=@step
+      WHERE EmailHash=@emailHash AND PasswordHash=@oldHash AND OtpSecretCipher IS NULL;
+      SELECT @@ROWCOUNT AS Updated;`);
+  if (updated?.Updated !== 1) return res.status(409).json({ error: '이미 설정된 계정입니다. 다시 로그인해 주세요.' });
+  issueSession(req, res);
 });
 
 app.use('/api/supervisor', requireSession);
+
+app.post('/api/supervisor/logout', (req, res) => {
+  if (!browserRequestAllowed(req, true)) return res.sendStatus(403);
+  sessions.delete(req.get('x-supervisor-token') ?? req.get('x-supervisor-session') ?? '');
+  res.sendStatus(204);
+});
+
+async function readBusinessRegistrations(pool: ConnectionPool, kaptCodes: string[]) {
+  if (!kaptCodes.length) return new Map<string, { businessRegistrationNumber: string; documentApplicationId: number | null }>();
+  const result = await pool.request().input('KaptCodes', JSON.stringify(kaptCodes)).input('MemberDataKey', memberDataKey)
+    .execute<JsonObject>('dbo.GetSupervisorComplexBusinessRegistrations');
+  return new Map(result.recordset.map(row => [String(row.KaptCode), {
+    businessRegistrationNumber: typeof row.BusinessRegistrationNumber === 'string' ? row.BusinessRegistrationNumber : '',
+    documentApplicationId: row.DocumentApplicationId == null ? null : numberValue(row.DocumentApplicationId),
+  }]));
+}
+
+app.get('/api/supervisor/notifications', async (req, res) => {
+  const page = Number(req.query.page ?? 1);
+  if (!Number.isInteger(page) || page < 1 || page > 2147483647) {
+    res.status(400).json({ error: '알림 페이지를 확인해 주세요.' });
+    return;
+  }
+  const pool = await getPool();
+  const result = await pool.request().input('MemberDataKey', memberDataKey).input('Page', page)
+    .input('CountOnly', req.query.passive === '1')
+    .execute<JsonObject>('dbo.ListSupervisorNotifications');
+  const rows = (result.recordsets[1] ?? []) as JsonObject[];
+  res.json({
+    total: numberValue(result.recordsets[0]?.[0]?.Total),
+    items: rows.map(row => ({
+      kind: row.Kind, id: numberValue(row.Id), kaptCode: row.KaptCode, role: row.RequestedRole,
+      complexName: row.ComplexName, createdAt: iso(row.CreatedAt), title: row.InquiryTitle,
+    })),
+  });
+});
+
+app.get('/api/supervisor/inquiries', async (req, res) => {
+  const id = req.query.id === undefined ? null : Number(req.query.id);
+  if (id !== null && (!Number.isInteger(id) || id < 1 || id > 2147483647)) {
+    res.status(400).json({ error: '문의 번호를 확인해 주세요.' });
+    return;
+  }
+  const pool = await getPool();
+  const { recordset } = await pool.request().input('MemberDataKey', memberDataKey)
+    .input('InquiryId', id).execute<InquiryRow>('dbo.ListSupervisorInquiries');
+  res.json({ inquiries: recordset.map(formatInquiry) });
+});
+
+app.get('/api/supervisor/inquiries/:id/image', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1 || id > 2147483647) return res.sendStatus(404);
+  const pool = await getPool();
+  const { recordset: [row] } = await pool.request().input('InquiryId', id)
+    .execute<{ AttachmentCipher: Buffer | null; AttachmentType: string | null }>('dbo.GetSupervisorInquiryAttachment');
+  if (!row?.AttachmentCipher || !row.AttachmentType) return res.sendStatus(404);
+  res.type(row.AttachmentType).send(decryptInquiryImage(row.AttachmentCipher, memberDataKey));
+});
+
+app.post('/api/supervisor/inquiries/:id/reply', authJson, async (req, res) => {
+  if (!browserRequestAllowed(req, true)) return res.sendStatus(403);
+  const id = Number(req.params.id), body = asObject(req.body);
+  const reply = typeof body.reply === 'string' ? body.reply.trim() : '';
+  if (!Number.isInteger(id) || id < 1 || id > 2147483647 || !reply || reply.length > 2000) {
+    return res.status(400).json({ error: '답변을 2,000자 이내로 입력해 주세요.' });
+  }
+  const pool = await getPool();
+  const { recordset: [result] } = await pool.request().input('InquiryId', id).input('Reply', reply)
+    .input('MemberDataKey', memberDataKey).execute<{ Updated: number }>('dbo.ReplySupervisorInquiry');
+  if (result?.Updated !== 1) return res.status(409).json({ error: '이미 답변했거나 조회할 수 없는 문의입니다.' });
+  res.sendStatus(204);
+});
 
 app.get('/api/supervisor/complexes', async (req, res, next) => {
   const search = typeof req.query.query === 'string' ? req.query.query.trim().slice(0, 100) : '';
@@ -199,11 +372,13 @@ app.get('/api/supervisor/complexes', async (req, res, next) => {
     const sets = result.recordsets ?? [];
     const summaryRow = asObject(sets[0]?.[0]);
     const rows = (sets[1] ?? []) as JsonObject[];
+    const registrations = await readBusinessRegistrations(pool, rows.map(row => String(row.KaptCode ?? '')));
     const items = rows.map(row => ({
       kaptCode: String(row.KaptCode ?? ''), kaptName: String(row.KaptName ?? ''), address: String(row.Address ?? ''),
       status: String(row.CommitteeStatus ?? 'UNREGISTERED'), approvedMemberCount: numberValue(row.ApprovedMemberCount),
       pendingApplicationCount: numberValue(row.PendingApplicationCount), rejectedApplicationCount: numberValue(row.RejectedApplicationCount),
       chairCount: numberValue(row.ChairCount), firstSubmittedAt: iso(row.FirstSubmittedAt), lastReviewedAt: iso(row.LastReviewedAt),
+      ...registrations.get(String(row.KaptCode)),
     }));
     res.json({
       summary: { total: numberValue(summaryRow.TotalComplexes), registered: numberValue(summaryRow.RegisteredComplexes),
@@ -224,6 +399,7 @@ app.get('/api/supervisor/complexes/:kaptCode', async (req, res, next) => {
     const sets = result.recordsets ?? [];
     const complexRow = asObject(sets[0]?.[0]);
     if (!complexRow.KaptCode) { res.status(404).json({ error: '단지 정보를 찾을 수 없습니다.' }); return; }
+    const registration = (await readBusinessRegistrations(pool, [kaptCode])).get(kaptCode);
     const members = ((sets[1] ?? []) as JsonObject[]).map(row => ({
       memberId: numberValue(row.MemberId), seat: numberValue(row.Seat), role: String(row.Role ?? ''), email: String(row.Email ?? ''),
       ...parseMember(row.MemberJson), approvedAt: iso(row.ApprovedAt), consentedAt: iso(row.ConsentedAt),
@@ -235,8 +411,24 @@ app.get('/api/supervisor/complexes/:kaptCode', async (req, res, next) => {
       approvedMemberId: row.ApprovedMemberId == null ? null : numberValue(row.ApprovedMemberId),
     }));
     res.json({ complex: { kaptCode: String(complexRow.KaptCode), kaptName: String(complexRow.KaptName ?? ''),
-      address: String(complexRow.Address ?? '') }, members, applications });
+      address: String(complexRow.Address ?? ''), ...registration }, members, applications });
   } catch (error) { next(error); }
+});
+
+app.put('/api/supervisor/complexes/:kaptCode/business-registration', authJson, async (req, res) => {
+  if (!browserRequestAllowed(req, true)) return res.status(403).json({ error: '허용되지 않은 요청입니다.' });
+  const kaptCode = req.params.kaptCode;
+  const input = asObject(req.body).businessRegistrationNumber;
+  const number = typeof input === 'string' ? input.trim().replace(/[\s-]/g, '') : '';
+  if (!/^[A-Z0-9]{1,50}$/.test(kaptCode) || !/^\d{10}$/.test(number)) {
+    return res.status(400).json({ error: '사업자등록번호 숫자 10자리를 입력해 주세요.' });
+  }
+  const pool = await getPool();
+  const { recordset: [result] } = await pool.request().input('KaptCode', kaptCode)
+    .input('BusinessRegistrationNumber', number).input('MemberDataKey', memberDataKey)
+    .execute<{ Saved: number }>('dbo.SaveSupervisorComplexBusinessRegistration');
+  if (result?.Saved !== 1) return res.status(404).json({ error: '단지 정보를 찾을 수 없습니다.' });
+  res.json({ businessRegistrationNumber: number });
 });
 
 app.get('/api/supervisor/applications/:applicationId/document', async (req, res, next) => {
@@ -245,15 +437,17 @@ app.get('/api/supervisor/applications/:applicationId/document', async (req, res,
   try {
     const pool = await getPool();
     const result = await pool.request().input('ApplicationId', applicationId).input('MemberDataKey', memberDataKey)
+      .input('IncludeReviewed', 1)
       .execute<JsonObject>('dbo.GetCommitteeApplicationForReview');
     const row = asObject(result.recordset[0]);
-    if (!row.ApplicationId || !Buffer.isBuffer(row.DocumentCipher)) { res.status(404).json({ error: '승인 대기 중인 첨부 문서를 찾을 수 없습니다.' }); return; }
+    if (!row.ApplicationId || !Buffer.isBuffer(row.DocumentCipher)) { res.status(404).json({ error: '첨부된 사업자등록증을 찾을 수 없습니다.' }); return; }
     const document = decryptDocument(row.DocumentCipher);
     const sha256 = crypto.createHash('sha256').update(document).digest('hex').toUpperCase();
     if (sha256 !== String(row.DocumentSha256 ?? '').trim().toUpperCase()) throw new Error('Committee document hash mismatch.');
     const sessionToken = req.get('x-supervisor-token') ?? req.get('x-supervisor-session') ?? '';
-    sessions.get(sessionToken)?.reviewedDocuments.set(applicationId, sha256);
-    const type = documentMime(document);
+    const type = committeeDocumentType(document);
+    if (!type) { res.status(415).json({ error: '지원하지 않는 사업자등록증 파일 형식입니다.' }); return; }
+    if (row.Status === 'PENDING') sessions.get(sessionToken)?.reviewedDocuments.set(applicationId, sha256);
     const member = parseMember(row.MemberJson);
     const rawName = typeof member.docName === 'string' ? member.docName : `committee-application-${applicationId}.${type.extension}`;
     const safeName = rawName.replace(/[\r\n"\\/]/g, '_').slice(0, 120) || `committee-application-${applicationId}.${type.extension}`;
@@ -316,9 +510,11 @@ app.post('/api/supervisor/complexes/:kaptCode/decision', express.json({ limit: '
         await new sql.Request(transaction).input('ApplicationId', applicationId)
           .input('ReviewedDocumentSha256', suppliedById.get(applicationId) ?? '')
           .input('ReviewNote', reason || '위원회 가입 신청 승인')
+          .input('MemberDataKey', memberDataKey)
           .execute('dbo.ApproveCommitteeApplication');
       } else {
         await new sql.Request(transaction).input('ApplicationId', applicationId).input('ReviewNote', reason)
+          .input('MemberDataKey', memberDataKey)
           .execute('dbo.RejectCommitteeApplication');
       }
       const queued = await new sql.Request(transaction).input('ApplicationId', applicationId)
@@ -343,6 +539,9 @@ app.post('/api/supervisor/complexes/:kaptCode/decision', express.json({ limit: '
     }
     if (error instanceof Error && error.name === 'DocumentReviewError') {
       res.status(400).json({ error: '승인 전에 모든 사업자등록증을 열어 원본과 해시를 확인해 주세요.' }); return;
+    }
+    if ((error as { number?: number }).number === 51114) {
+      res.status(409).json({ error: '이미 등록했거나 승인 대기 중인 이메일과 중복되어 승인할 수 없습니다.' }); return;
     }
     if (/already reviewed|Pending committee application not found|Committee is full|chair already exists|identity already registered/i.test(message)) {
       res.status(409).json({ error: '위원회 구성 또는 신청 상태가 변경되었습니다. 상세 정보를 다시 확인해 주세요.' }); return;
@@ -376,4 +575,29 @@ async function shutdown(): Promise<void> {
 
 process.on('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 process.on('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
-void start().catch(error => { console.error('supervisor startup failed:', error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
+async function seedAccounts(): Promise<void> {
+  const password = process.env.SUPERVISOR_INITIAL_PASSWORD ?? '';
+  const supervisorEmails = [...new Set((process.env.SUPERVISOR_ACCOUNT_EMAILS ?? '').split(',')
+    .map(email => email.trim().toLowerCase()).filter(Boolean))];
+  if (password.length < 8 || Buffer.byteLength(password) > 72) throw new Error('SUPERVISOR_INITIAL_PASSWORD is invalid.');
+  if (!supervisorEmails.length || supervisorEmails.some(email => email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new Error('SUPERVISOR_ACCOUNT_EMAILS is invalid.');
+  }
+  const pool = await getPool();
+  try {
+    for (const email of supervisorEmails) {
+      await pool.request().input('email', email).input('hash', await bcrypt.hash(password, 12)).input('key', memberDataKey).query(`
+        DECLARE @emailHash char(64)=dbo.MemberLookupHash(@email,@key);
+        INSERT dbo.SupervisorAccounts(EmailHash,EmailCipher,PasswordHash)
+        SELECT @emailHash,dbo.EncryptMemberData(@email,@key),@hash WHERE NOT EXISTS (
+          SELECT 1 FROM dbo.SupervisorAccounts WITH (UPDLOCK,HOLDLOCK) WHERE EmailHash=@emailHash
+        );`);
+    }
+    console.log('Supervisor accounts initialized.');
+  } finally {
+    await pool.close();
+  }
+}
+
+void (process.argv.includes('--seed-accounts') ? seedAccounts() : start())
+  .catch(error => { console.error('supervisor startup failed:', error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

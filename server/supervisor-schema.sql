@@ -47,8 +47,8 @@ BEGIN
       CHECK(Decision IN('APPROVED','REJECTED')),
     ApplicationCount int NOT NULL CONSTRAINT CK_SupervisorDecisionAudit_Count CHECK(ApplicationCount BETWEEN 1 AND 50),
     Reviewer nvarchar(128) NOT NULL,
-    RemoteAddress nvarchar(100) NOT NULL,
-    UserAgent nvarchar(500) NULL,
+    RemoteAddressCipher varbinary(max) NULL,
+    UserAgentCipher varbinary(max) NULL,
     ReasonCipher varbinary(max) NULL,
     CreatedAt datetime2(0) NOT NULL CONSTRAINT DF_SupervisorDecisionAudit_CreatedAt DEFAULT SYSUTCDATETIME());
   CREATE INDEX IX_SupervisorDecisionAudit_Complex ON dbo.SupervisorDecisionAudit(KaptCode,CreatedAt DESC);
@@ -120,7 +120,7 @@ BEGIN
   FROM dbo.CommitteeMembers WHERE KaptCode=@KaptCode ORDER BY Seat,MemberId;
   SELECT ApplicationId,RequestedRole,Status,dbo.DecryptMemberData(EmailCipher,@MemberDataKey) AS Email,
     dbo.DecryptMemberData(MemberCipher,@MemberDataKey) AS MemberJson,DocumentSha256,SubmittedAt,
-    ReviewedAt,ReviewNote,ApprovedMemberId
+    ReviewedAt,dbo.DecryptMemberData(ReviewNoteCipher,@MemberDataKey) AS ReviewNote,ApprovedMemberId
   FROM dbo.CommitteeApplications WHERE KaptCode=@KaptCode
   ORDER BY CASE Status WHEN ''PENDING'' THEN 0 WHEN ''APPROVED'' THEN 1 ELSE 2 END,SubmittedAt,ApplicationId;
 END;');
@@ -149,7 +149,8 @@ BEGIN
   DECLARE @createdRecipients TABLE(EmailHash char(64) NOT NULL,Title nvarchar(200) NOT NULL,MessageCipher varbinary(max) NOT NULL);
   IF @ApplicationCount<1 OR @ApplicationCount>50 THROW 51106,''Invalid committee notification recipient count.'',1;
   SELECT @status=Status,@memberId=ApprovedMemberId,@kaptCode=KaptCode,@emailCipher=EmailCipher,
-    @emailHash=EmailHash,@reason=ReviewNote FROM dbo.CommitteeApplications WITH(UPDLOCK,HOLDLOCK) WHERE ApplicationId=@ApplicationId;
+    @emailHash=EmailHash,@reason=dbo.DecryptMemberData(ReviewNoteCipher,@MemberDataKey)
+    FROM dbo.CommitteeApplications WITH(UPDLOCK,HOLDLOCK) WHERE ApplicationId=@ApplicationId;
   IF @status NOT IN(''APPROVED'',''REJECTED'') THROW 51102,''Reviewed committee application is required.'',1;
   IF @status=''APPROVED''
   BEGIN SET @title=N''위원회 가입 신청 승인'';
@@ -206,8 +207,10 @@ BEGIN
   IF @reviewer IS NULL THROW 51063,''Authenticated reviewer login is required.'',1;
   IF @Decision NOT IN(''APPROVED'',''REJECTED'') OR @ApplicationCount<1 OR @ApplicationCount>50
     THROW 51103,''Invalid supervisor audit decision.'',1;
-  INSERT dbo.SupervisorDecisionAudit(KaptCode,Decision,ApplicationCount,Reviewer,RemoteAddress,UserAgent,ReasonCipher)
-  VALUES(@KaptCode,@Decision,@ApplicationCount,@reviewer,LEFT(COALESCE(@RemoteAddress,N''unknown''),100),LEFT(@UserAgent,500),
+  INSERT dbo.SupervisorDecisionAudit(KaptCode,Decision,ApplicationCount,Reviewer,RemoteAddressCipher,UserAgentCipher,ReasonCipher)
+  VALUES(@KaptCode,@Decision,@ApplicationCount,@reviewer,
+    dbo.EncryptMemberData(LEFT(COALESCE(@RemoteAddress,N''unknown''),100),@MemberDataKey),
+    dbo.EncryptMemberData(LEFT(@UserAgent,500),@MemberDataKey),
     CASE WHEN NULLIF(LTRIM(RTRIM(@Reason)),N'''') IS NULL THEN NULL ELSE dbo.EncryptMemberData(LEFT(@Reason,1000),@MemberDataKey) END);
   SELECT CONVERT(bigint,SCOPE_IDENTITY()) AS AuditId;
 END;');
@@ -244,10 +247,17 @@ BEGIN
     WHERE NotificationId=@NotificationId AND EmailSentAt IS NULL;
 END;');
 
-EXEC(N'CREATE OR ALTER PROCEDURE dbo.GetCommitteeDecisionNotifications @MemberId int,@MemberDataKey nvarchar(128) AS
+EXEC(N'CREATE OR ALTER PROCEDURE dbo.GetCommitteeDecisionNotifications @MemberId int,@MemberDataKey nvarchar(128),@CountOnly bit=0 AS
 BEGIN SET NOCOUNT ON;
-  SELECT TOP(50) NotificationId,Decision,Title,dbo.DecryptMemberData(MessageCipher,@MemberDataKey) AS Message,CreatedAt,ReadAt
-  FROM dbo.CommitteeDecisionNotifications WHERE ApprovedMemberId=@MemberId ORDER BY CreatedAt DESC,NotificationId DESC;
+  IF @CountOnly=1
+  BEGIN
+    SELECT COUNT(*) AS UnreadCount FROM dbo.CommitteeDecisionNotifications WHERE ApprovedMemberId=@MemberId AND ReadAt IS NULL;
+    RETURN;
+  END;
+  SELECT TOP(50) NotificationId,Decision,Title,dbo.DecryptMemberData(MessageCipher,@MemberDataKey) AS Message,CreatedAt,ReadAt,
+    COUNT(CASE WHEN ReadAt IS NULL THEN 1 END) OVER () AS UnreadCount
+  FROM dbo.CommitteeDecisionNotifications WHERE ApprovedMemberId=@MemberId
+  ORDER BY CASE WHEN ReadAt IS NULL THEN 0 ELSE 1 END,CreatedAt DESC,NotificationId DESC;
 END;');
 
 EXEC(N'CREATE OR ALTER PROCEDURE dbo.ReadCommitteeDecisionNotification @MemberId int,@NotificationId bigint AS
@@ -267,7 +277,7 @@ GRANT EXECUTE ON OBJECT::dbo.RecordSupervisorDecisionAudit TO MuteLabCommitteeAp
 
 IF DATABASE_PRINCIPAL_ID(N'MuteLabApiRole') IS NOT NULL
 BEGIN
-  GRANT SELECT (KaptCode,RequestedRole,ReviewNote) ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
+  GRANT SELECT (KaptCode,RequestedRole,ReviewNoteCipher) ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
   GRANT EXECUTE ON OBJECT::dbo.ClaimCommitteeDecisionEmail TO MuteLabApiRole;
   GRANT EXECUTE ON OBJECT::dbo.CompleteCommitteeDecisionEmail TO MuteLabApiRole;
   GRANT EXECUTE ON OBJECT::dbo.GetCommitteeDecisionNotifications TO MuteLabApiRole;

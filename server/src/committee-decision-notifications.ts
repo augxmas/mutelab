@@ -72,17 +72,51 @@ export async function retryPendingCommitteeDecisionEmail(emailFrom: string): Pro
 }
 
 export async function committeeDecisionNotifications(_req: Request, res: Response): Promise<void> {
-  const rows = await querySql<DecisionNotificationRow>(`
-    EXEC dbo.GetCommitteeDecisionNotifications @MemberId=@memberId,@MemberDataKey=@key;
-  `, { memberId: Number(res.locals.memberId), key: memberDataKey });
-  res.json({ notifications: rows.map(row => ({
+  const parameters = { memberId: Number(res.locals.memberId), kaptCode: res.locals.kaptCode, key: memberDataKey };
+  const [rows, replies] = await Promise.all([
+    querySql<DecisionNotificationRow & { UnreadCount: number }>(`
+      EXEC dbo.GetCommitteeDecisionNotifications @MemberId=@memberId,@MemberDataKey=@key;
+    `, parameters),
+    querySql<{ InquiryId: number; Question: string; Reply: string; RepliedAt: Date; ReplyReadAt: Date | null; UnreadCount: number }>(`
+      SELECT TOP (50) InquiryId,RepliedAt,ReplyReadAt,
+        COUNT(CASE WHEN ReplyReadAt IS NULL THEN 1 END) OVER () AS UnreadCount,
+        dbo.DecryptMemberData(QuestionCipher,@key) AS Question,dbo.DecryptMemberData(ReplyCipher,@key) AS Reply
+      FROM dbo.CommitteeInquiries WHERE MemberId=@memberId AND KaptCode=@kaptCode AND RepliedAt IS NOT NULL
+      ORDER BY CASE WHEN ReplyReadAt IS NULL THEN 0 ELSE 1 END,RepliedAt DESC,InquiryId DESC
+    `, parameters),
+  ]);
+  const decisions = rows.map(row => ({
+    kind: 'decision',
     notificationId: Number(row.NotificationId),
     decision: row.Decision,
     title: row.Title,
     message: row.Message,
     createdAt: new Date(row.CreatedAt).toISOString(),
     readAt: row.ReadAt ? new Date(row.ReadAt).toISOString() : null,
-  })) });
+  }));
+  const answers = replies.map(row => ({
+    kind: 'inquiry', notificationId: row.InquiryId, decision: 'REPLIED',
+    title: `문의 답변 · ${JSON.parse(row.Question).title}`, message: row.Reply,
+    createdAt: new Date(row.RepliedAt).toISOString(), readAt: row.ReplyReadAt ? new Date(row.ReplyReadAt).toISOString() : null,
+  }));
+  const notifications = [...decisions, ...answers].sort((a, b) => Number(Boolean(a.readAt)) - Number(Boolean(b.readAt))
+    || b.createdAt.localeCompare(a.createdAt));
+  res.json({ notifications, unreadCount: (rows[0]?.UnreadCount ?? decisions.filter(row => !row.readAt).length)
+    + (replies[0]?.UnreadCount ?? 0) });
+}
+
+export async function committeeUnreadNotificationCount(_req: Request, res: Response): Promise<void> {
+  const memberId = Number(res.locals.memberId);
+  const [decisions, replies] = await Promise.all([
+    querySql<{ UnreadCount: number }>(`
+      EXEC dbo.GetCommitteeDecisionNotifications @MemberId=@memberId,@MemberDataKey=@key,@CountOnly=1;
+    `, { memberId, key: memberDataKey }),
+    querySql<{ UnreadCount: number }>(`
+      SELECT COUNT(*) AS UnreadCount FROM dbo.CommitteeInquiries
+      WHERE MemberId=@memberId AND KaptCode=@kaptCode AND RepliedAt IS NOT NULL AND ReplyReadAt IS NULL;
+    `, { memberId, kaptCode: res.locals.kaptCode }),
+  ]);
+  res.json({ unreadCount: (decisions[0]?.UnreadCount ?? 0) + (replies[0]?.UnreadCount ?? 0) });
 }
 
 export async function readCommitteeDecisionNotification(req: Request, res: Response): Promise<void> {

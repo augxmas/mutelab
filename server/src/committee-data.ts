@@ -1,16 +1,23 @@
 import { isIP } from 'node:net';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import express, { type Request, type Response } from 'express';
 import { committeeAccess, field } from './committee-auth';
 import { memberDataKey, querySql } from './db';
-import { createIncidentPdf } from './committee-pdf';
+import { normalizeRoomNumber } from './room-number';
+import { createIncidentPdf, createMediationPdf, createVisitApplicationPdf } from './committee-pdf';
 import { sendNotificationEmail } from './verification-email';
-import { committeeDecisionNotifications, readCommitteeDecisionNotification } from './committee-decision-notifications';
+import { committeeDecisionNotifications, committeeUnreadNotificationCount, readCommitteeDecisionNotification } from './committee-decision-notifications';
+import { decryptInquiryImage, encryptInquiryImage, formatInquiry, type InquiryRow } from './committee-inquiry-files';
 
 type JsonObject = Record<string, unknown>;
 type ResidentRequest = Request & { user?: { sub: string } };
 
 interface SubmissionRow {
+  ReportId: number | null;
+  ReportCreatedAt: Date | null;
+  ReportKey: string | null;
+  CounterpartVersion: string | null;
   RecordNo: string;
   UserId: number;
   ArtifactId: number;
@@ -36,6 +43,11 @@ interface SubmissionRow {
 }
 
 export interface CommitteeIncident {
+  reportKey: string | null;
+  reportId: number | null;
+  reportNo: string | null;
+  counterpartVersion: string | null;
+  counterpartConfirmed: boolean;
   recordNo: string;
   userId: number;
   artifactId: number;
@@ -57,6 +69,8 @@ export interface CommitteeIncident {
   longitude: string;
   ip: string;
   estimatedPlace: string;
+  estimatedDong: string;
+  estimatedHo: string;
   otherName: string;
   otherDong: string;
   otherHo: string;
@@ -89,6 +103,38 @@ const unitParts = (value: string): { dong: string; ho: string } => ({
   dong: value.match(/([\p{L}\d-]+)\s*동(?=\s|\d|$)/u)?.[1] ?? '',
   ho: value.match(/(\d+)\s*호/u)?.[1] ?? '',
 });
+const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value))
+  && new Date(value).toISOString().slice(0, 10) === value && !value.startsWith('0000-');
+function linkedIncidentDates(query: Request['query'], jsonColumn: 'data.Report' | 'data.Application') {
+  const startedFrom = field(query.startedFrom), startedTo = field(query.startedTo);
+  if ((startedFrom && !validDate(startedFrom)) || (startedTo && !validDate(startedTo))
+      || (startedFrom && startedTo && startedFrom > startedTo)) return null;
+  const sql = startedFrom || startedTo ? `AND EXISTS (
+    SELECT 1 FROM OPENJSON(CASE WHEN ISJSON(${jsonColumn})=1 THEN ${jsonColumn} END, '$.recordNos') linked
+    JOIN dbo.CommitteeSubmissions s ON s.RecordNo=linked.value AND s.KaptCode=m.KaptCode
+    JOIN dbo.NoiseRecordings r ON r.RecordNo=s.RecordNo AND r.UserId=s.UserId
+    WHERE 1=1
+      ${startedFrom ? "AND CONVERT(date,DATEADD(hour,9,r.StartedAt))>=CONVERT(date,@startedFrom,23)" : ''}
+      ${startedTo ? "AND CONVERT(date,DATEADD(hour,9,r.StartedAt))<=CONVERT(date,@startedTo,23)" : ''}
+  )` : '';
+  return { sql, startedFrom, startedTo };
+}
+const householdFilterKeys = ['applicantName', 'applicantDong', 'applicantHo', 'otherName', 'otherDong', 'otherHo'] as const;
+
+function matchesHouseholdFilters(row: Record<typeof householdFilterKeys[number], string>, filters: Request['query']): boolean {
+  return householdFilterKeys.every(key => {
+    const query = normalized(field(filters[key]));
+    if (!query) return true;
+    const actual = normalized(row[key]);
+    if (key.endsWith('Dong')) return actual.replace(/동$/, '') === query.replace(/동$/, '');
+    if (key.endsWith('Ho')) return actual.replace(/호$/, '') === query.replace(/호$/, '');
+    return actual.includes(query);
+  });
+}
+function estimatedUnitFields(place: string): { estimatedDong: string; estimatedHo: string } {
+  const { dong, ho } = unitParts(place);
+  return { estimatedDong: dong, estimatedHo: ho || (/^[0-9]+$/.test(place) ? place : '') };
+}
 const durationText = (startedAt: Date, endedAt: Date): string => {
   const seconds = Math.max(0, Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000));
   return `${seconds >= 60 ? `${Math.floor(seconds / 60)}분 ` : ''}${seconds % 60}초`;
@@ -103,7 +149,15 @@ function mapIncident(row: SubmissionRow): CommitteeIncident {
   const hasCounterpartOverride = Boolean(row.CounterpartOverride);
   const override = hasCounterpartOverride ? parseJson(row.CounterpartOverride) : {};
   const editor = parseJson(row.CounterpartEditor);
+  const estimatedPlace = clean(hasCounterpartOverride ? override.estimatedPlace : journal.place, 200);
+  const otherName = clean(hasCounterpartOverride ? override.name : submittedOther.name, 80);
+  const otherHo = normalizeRoomNumber(hasCounterpartOverride ? override.ho : submittedOther.ho).slice(0, 20);
   return {
+    reportKey: row.ReportKey,
+    reportId: row.ReportId,
+    reportNo: row.ReportId && row.ReportCreatedAt ? documentSerial(row.ReportCreatedAt, row.ReportId) : null,
+    counterpartVersion: row.CounterpartVersion,
+    counterpartConfirmed: hasCounterpartOverride && Boolean(otherName && otherHo),
     recordNo: row.RecordNo,
     userId: row.UserId,
     artifactId: Number(row.ArtifactId),
@@ -118,16 +172,17 @@ function mapIncident(row: SubmissionRow): CommitteeIncident {
     applicantDong: clean(applicant.dong, 20),
     applicantHo: clean(applicant.ho, 20),
     noiseType: clean(journal.kind, 100),
-    durationOrCount: clean(details.frequency, 80) || durationText(row.StartedAt, row.EndedAt),
+    durationOrCount: clean(journal.frequency, 80) || clean(details.frequency, 80) || durationText(row.StartedAt, row.EndedAt),
     minDb: clean(analysis.minDb, 20),
     maxDb: clean(analysis.maxDb, 20),
     latitude: clean(analysis.latitude, 30),
     longitude: clean(analysis.longitude, 30),
     ip: clean(analysis.ip, 64),
-    estimatedPlace: clean(hasCounterpartOverride ? override.estimatedPlace : journal.place, 200),
-    otherName: clean(hasCounterpartOverride ? override.name : submittedOther.name, 80),
+    estimatedPlace,
+    ...estimatedUnitFields(estimatedPlace),
+    otherName,
     otherDong: clean(hasCounterpartOverride ? override.dong : submittedOther.dong, 20),
-    otherHo: clean(hasCounterpartOverride ? override.ho : submittedOther.ho, 20),
+    otherHo,
     damage: clean(journal.impact, 1_000),
     submittedAudioSha256: row.SubmittedAudioSha256.trim().toUpperCase(),
     expectedAudioSha256: row.ExpectedAudioSha256.trim().toUpperCase(),
@@ -143,18 +198,79 @@ function mapIncident(row: SubmissionRow): CommitteeIncident {
   };
 }
 
-async function readIncidents(kaptCode: string, recordNos?: string[]): Promise<CommitteeIncident[]> {
+function matchesApplicationHousehold(data: JsonObject, filters: Request['query']): boolean {
+  const suffix = (value: unknown) => field(value).match(/(?:[\p{L}0-9-]+\s*동\s*)?[0-9]+\s*호$/u)?.[0]
+    ?? field(value).match(/(?:^|\s)([0-9][\p{L}0-9-]*\s*동)$/u)?.[1] ?? '';
+  const applicant = unitParts(suffix(data.applicantAddress));
+  const counterpart = unitParts(suffix(data.counterpartAddress));
+  return matchesHouseholdFilters({
+    applicantName: field(data.applicantName), applicantDong: applicant.dong, applicantHo: applicant.ho,
+    otherName: field(data.counterpartName), otherDong: counterpart.dong, otherHo: counterpart.ho,
+  }, filters);
+}
+
+let reportSchemaReady = false;
+const documentDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' });
+function documentSerial(createdAt: Date, id: number): string {
+  return `${documentDate.format(createdAt).replaceAll('-', '')}_${String(id).padStart(4, '0')}`;
+}
+
+const ensureVisibleDocumentIncidents = `
+  DECLARE @incidentLock int, @incidentResource nvarchar(255)=CONCAT(N'CommitteeReport:',@kaptCode);
+  EXEC @incidentLock=sys.sp_getapplock @Resource=@incidentResource,@LockMode='Exclusive',@LockTimeout=5000;
+  IF @incidentLock<0 OR EXISTS (
+    SELECT 1 FROM OPENJSON(@payload,'$.recordNos') WITH (RecordNo varchar(13) '$') linked
+    WHERE NOT EXISTS (
+      SELECT 1 FROM dbo.CommitteeSubmissions s WITH (UPDLOCK,HOLDLOCK)
+      WHERE s.KaptCode=@kaptCode AND s.RecordNo=linked.RecordNo
+        AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL
+    )
+  )
+  BEGIN
+    ROLLBACK TRANSACTION;
+    RETURN;
+  END;
+`;
+
+async function hasReportSchema(): Promise<boolean> {
+  if (!reportSchemaReady) {
+    const [state] = await querySql<{ Ready: number }>(`
+      SELECT CASE WHEN HAS_PERMS_BY_NAME(N'dbo.CommitteeReportIncidents',N'OBJECT',N'SELECT')=1
+        AND HAS_PERMS_BY_NAME(N'dbo.CommitteeReportIncidents',N'OBJECT',N'INSERT')=1 THEN 1 ELSE 0 END AS Ready
+    `);
+    reportSchemaReady = state?.Ready === 1;
+  }
+  return reportSchemaReady;
+}
+
+function reportPairKey(kaptCode: string, row: CommitteeIncident): string {
+  const parts = [kaptCode, row.userId, normalized(row.applicantDong).replace(/동$/, ''),
+    normalized(row.applicantHo).replace(/호$/, ''), normalized(row.otherDong).replace(/동$/, ''), row.otherHo];
+  return crypto.createHmac('sha256', memberDataKey).update(JSON.stringify(parts)).digest('hex');
+}
+
+async function readIncidents(kaptCode: string, recordNos?: string[], reportKey?: string): Promise<CommitteeIncident[]> {
   const parameters: Record<string, unknown> = { kaptCode, key: memberDataKey };
   let restriction = '';
+  const reportReady = await hasReportSchema();
+  if (reportKey) {
+    if (!reportReady) return [];
+    parameters.reportKey = reportKey;
+    restriction = ' AND report.PairKey=@reportKey';
+  }
   if (recordNos) {
-    restriction = ` AND s.RecordNo IN (${recordNos.map((recordNo, index) => {
+    restriction += ` AND s.RecordNo IN (${recordNos.map((recordNo, index) => {
       parameters[`record${index}`] = recordNo;
       return `@record${index}`;
     }).join(',')})`;
   }
   const rows = await querySql<SubmissionRow>(`
     SELECT s.RecordNo,s.UserId,a.ArtifactId,a.ArtifactSource,
-      CONVERT(varchar(18),s.SubmissionVersion,1) AS SubmissionVersion,
+      ${reportReady ? 'report.PairKey' : 'CAST(NULL AS char(64))'} AS ReportKey,
+      ${reportReady ? 'document.ReportId' : 'NULL'} AS ReportId,
+      ${reportReady ? 'document.CreatedAt' : 'NULL'} AS ReportCreatedAt,
+      CONVERT(char(64),HASHBYTES('SHA2_256',o.DataCipher),2) AS CounterpartVersion,
+      CONVERT(varchar(18),CONVERT(binary(8),s.SubmissionVersion),1) AS SubmissionVersion,
       CONVERT(char(64),HASHBYTES('SHA2_256',j.JournalCipher),2) AS JournalVersion,r.StartedAt,r.EndedAt,
       dbo.DecryptMemberData(j.JournalCipher,@key) AS Journal,
       dbo.DecryptMemberData(s.DetailsCipher,@key) AS Details,
@@ -174,8 +290,10 @@ async function readIncidents(kaptCode: string, recordNos?: string[]): Promise<Co
       FROM dbo.CommitteeIntegrityEvents e WHERE e.RecordNo=s.RecordNo
       ORDER BY e.EventId DESC) lastCheck
     LEFT JOIN dbo.CommitteeCounterpartOverrides o ON o.RecordNo=s.RecordNo AND o.KaptCode=s.KaptCode
+    ${reportReady ? 'LEFT JOIN dbo.CommitteeReportIncidents report ON report.RecordNo=s.RecordNo AND report.KaptCode=s.KaptCode' : ''}
+    ${reportReady ? 'LEFT JOIN dbo.CommitteeNoiseReports document ON document.KaptCode=report.KaptCode AND document.PairKey=report.PairKey' : ''}
     LEFT JOIN dbo.CommitteeMembers editor ON editor.MemberId=o.UpdatedBy
-    WHERE s.KaptCode=@kaptCode AND s.WithdrawnAt IS NULL${restriction}
+    WHERE s.KaptCode=@kaptCode AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL${restriction}
     ORDER BY r.StartedAt,r.RecordNo
   `, parameters);
   return rows.map(mapIncident);
@@ -232,7 +350,8 @@ async function verifyIntegrity(
     JOIN dbo.NoiseRecordings r ON r.RecordNo=s.RecordNo AND r.UserId=s.UserId
     JOIN dbo.CommitteeSubmissionArtifacts a ON a.ArtifactId=s.SubmissionArtifactId
       AND a.RecordNo=s.RecordNo AND a.UserId=s.UserId
-    WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL;
+    WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL
+      AND (@checkedBy=0 OR s.CommitteeHiddenAt IS NULL);
     IF @userId IS NULL THROW 51050,'Committee submission not found.',1;
     SET @status=CASE WHEN @source='UPLOAD' AND @submitted=@observed AND @submitted=@expected
       AND @expected=@originalObserved THEN 'VERIFIED' ELSE 'MISMATCH_BLOCKED' END;
@@ -349,10 +468,6 @@ export async function uploadCommitteeSubmissionAudio(req: ResidentRequest, res: 
       IF EXISTS(SELECT 1 FROM dbo.NoiseRecordings
         WHERE RecordNo=@recordNo AND UserId=@userId AND AudioSha256=@sha256 AND AudioLength=@length)
         SET @isRecovery=1;
-      DELETE a FROM dbo.CommitteeSubmissionArtifacts a
-      WHERE a.RecordNo=@recordNo AND a.UserId=@userId AND a.ArtifactSource='UPLOAD'
-        AND a.UploadedAt<DATEADD(hour,-1,SYSUTCDATETIME())
-        AND NOT EXISTS(SELECT 1 FROM dbo.CommitteeSubmissionArtifactBindings b WHERE b.ArtifactId=a.ArtifactId);
       IF @isRecovery=0 AND ((SELECT COUNT_BIG(*) FROM dbo.CommitteeSubmissionArtifacts WITH(UPDLOCK,HOLDLOCK)
           WHERE RecordNo=@recordNo AND UserId=@userId AND ArtifactSource='UPLOAD'
             AND UploadedAt>=DATEADD(hour,-1,SYSUTCDATETIME()))>=5
@@ -364,11 +479,11 @@ export async function uploadCommitteeSubmissionAudio(req: ResidentRequest, res: 
             AND UploadedAt>=DATEADD(day,-30,SYSUTCDATETIME())),0)+@length>2147483648)
         THROW 51055,'Committee audio upload quota exceeded.',1;
       IF @isRecovery=0 AND (SELECT COUNT_BIG(*) FROM dbo.CommitteeSubmissionArtifacts a WITH(UPDLOCK,HOLDLOCK)
-        WHERE a.RecordNo=@recordNo AND a.UserId=@userId
+        WHERE a.RecordNo=@recordNo AND a.UserId=@userId AND a.UploadedAt>=DATEADD(hour,-1,SYSUTCDATETIME())
           AND NOT EXISTS(SELECT 1 FROM dbo.CommitteeSubmissionArtifactBindings b WHERE b.ArtifactId=a.ArtifactId))>=5
         THROW 51055,'Too many pending committee audio uploads.',1;
       IF @isRecovery=0 AND COALESCE((SELECT SUM(a.AudioLength) FROM dbo.CommitteeSubmissionArtifacts a WITH(UPDLOCK,HOLDLOCK)
-        WHERE a.UserId=@userId
+        WHERE a.UserId=@userId AND a.UploadedAt>=DATEADD(hour,-24,SYSUTCDATETIME())
           AND NOT EXISTS(SELECT 1 FROM dbo.CommitteeSubmissionArtifactBindings b WHERE b.ArtifactId=a.ArtifactId)),0)+@length
           > 524288000
         THROW 51057,'Committee audio pending storage quota exceeded.',1;
@@ -395,19 +510,6 @@ export async function uploadCommitteeSubmissionAudio(req: ResidentRequest, res: 
   res.status(artifact.Reused ? 200 : 201).json({
     artifactId: Number(artifact.ArtifactId), sha256, audioLength: audio.length, reused: Boolean(artifact.Reused),
   });
-}
-
-export async function cleanupCommitteeSubmissionArtifacts(): Promise<void> {
-  await querySql(`
-    ;WITH expired AS (
-      SELECT TOP (20) a.ArtifactId
-      FROM dbo.CommitteeSubmissionArtifacts a
-      WHERE a.ArtifactSource='UPLOAD' AND a.UploadedAt<DATEADD(hour,-24,SYSUTCDATETIME())
-        AND NOT EXISTS(SELECT 1 FROM dbo.CommitteeSubmissionArtifactBindings b WHERE b.ArtifactId=a.ArtifactId)
-      ORDER BY a.UploadedAt,a.ArtifactId
-    )
-    DELETE a FROM dbo.CommitteeSubmissionArtifacts a JOIN expired e ON e.ArtifactId=a.ArtifactId;
-  `);
 }
 
 export async function retryPendingNotificationEmail(emailFrom: string): Promise<boolean> {
@@ -474,7 +576,7 @@ export async function submitCommitteeIncident(req: ResidentRequest, res: Respons
   }
   const minDb = clean(input.minDb, 20), maxDb = clean(input.maxDb, 20);
   const latitude = clean(input.latitude, 30), longitude = clean(input.longitude, 30), ip = clean(input.ip, 64);
-  const otherName = clean(input.otherName, 80), otherDong = clean(input.otherDong, 20), otherHo = clean(input.otherHo, 20);
+  const otherName = clean(input.otherName, 80), otherDong = clean(input.otherDong, 20), otherHo = normalizeRoomNumber(input.otherHo).slice(0, 20);
   const frequency = clean(input.frequency, 80);
   const numericOrEmpty = (value: string): boolean => !value || numberValue.test(value);
   const latitudeNumber = Number(latitude), longitudeNumber = Number(longitude);
@@ -644,7 +746,20 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
   const activeAudioByMember = new Map<number, number>();
   const audioWindows = new Map<number, { startedAt: number; count: number }>();
   router.get('/apartments', apartmentSearch);
+  router.get('/notification-updates', committeeAccess(jwtSecret, 'observe'), committeeUnreadNotificationCount);
   router.use(committeeAccess(jwtSecret));
+
+  const documents = new Set(['visit-consultation', 'measurement-request', 'incident-log', 'consent',
+    'mediation-report', 'committee-guide', 'security-staff-log']);
+  router.get('/documents/:documentId', (req, res) => {
+    const documentId = req.params.documentId;
+    if (!documents.has(documentId)) {
+      res.status(404).json({ error: '제출서류를 찾을 수 없습니다.' });
+      return;
+    }
+    res.type('application/pdf').set('Cache-Control', 'private, no-store')
+      .sendFile(`${documentId}.pdf`, { root: path.resolve(__dirname, '../committee-documents') });
+  });
 
   router.get('/me', async (_req, res) => {
     const [complex] = await querySql<{ kaptName: string; address: string }>(`
@@ -666,24 +781,699 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
   router.get('/notifications', committeeDecisionNotifications);
   router.post('/notifications/:notificationId/read', readCommitteeDecisionNotification);
 
+  router.get('/inquiries', async (_req, res) => {
+    const rows = await querySql<InquiryRow>(`
+      SELECT TOP (100) InquiryId,CreatedAt,RepliedAt,AttachmentType,
+        dbo.DecryptMemberData(QuestionCipher,@key) AS Question,dbo.DecryptMemberData(ReplyCipher,@key) AS Reply
+      FROM dbo.CommitteeInquiries WHERE KaptCode=@kaptCode ORDER BY InquiryId DESC
+    `, { kaptCode: res.locals.kaptCode, key: memberDataKey });
+    res.json({ inquiries: rows.map(formatInquiry) });
+  });
+
+  router.post('/inquiries', express.json({ limit: '3mb', type: 'application/vnd.mutelab.inquiry+json' }), async (req, res) => {
+    const title = field(req.body?.title), content = field(req.body?.content);
+    const question = JSON.stringify({ title, content });
+    if (!title || title.length > 120 || !content || content.length > 2000 || question.length > 3500) {
+      return res.status(400).json({ error: '제목과 내용을 확인해 주세요.' });
+    }
+    const image = req.body?.image == null ? null : encryptInquiryImage(req.body.image, memberDataKey);
+    if (req.body?.image != null && !image) return res.status(400).json({ error: '2MB 이하의 JPEG, PNG, GIF 또는 WebP 이미지를 첨부해 주세요.' });
+    const [saved] = await querySql<{ Id: number }>(`
+      INSERT dbo.CommitteeInquiries(KaptCode,MemberId,QuestionCipher,AttachmentCipher,AttachmentType)
+      VALUES(@kaptCode,@memberId,dbo.EncryptMemberData(@question,@key),CONVERT(varbinary(max),@image),@mime);
+      SELECT CONVERT(int,SCOPE_IDENTITY()) AS Id;
+    `, { kaptCode: res.locals.kaptCode, memberId: res.locals.memberId, question, key: memberDataKey,
+      image: image?.cipher ?? null, mime: image?.mime ?? null });
+    res.status(201).json({ id: saved.Id });
+  });
+
+  router.get('/inquiries/:id/image', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) return res.sendStatus(404);
+    const [row] = await querySql<{ AttachmentCipher: Buffer | null; AttachmentType: string | null }>(`
+      SELECT AttachmentCipher,AttachmentType FROM dbo.CommitteeInquiries WHERE InquiryId=@id AND KaptCode=@kaptCode
+    `, { id, kaptCode: res.locals.kaptCode });
+    if (!row?.AttachmentCipher || !row.AttachmentType) return res.sendStatus(404);
+    res.type(row.AttachmentType).send(decryptInquiryImage(row.AttachmentCipher, memberDataKey));
+  });
+
+  router.post('/inquiries/:id/read', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) return res.sendStatus(404);
+    const [row] = await querySql<{ Updated: number }>(`
+      UPDATE dbo.CommitteeInquiries SET ReplyReadAt=COALESCE(ReplyReadAt,SYSUTCDATETIME())
+      WHERE InquiryId=@id AND MemberId=@memberId AND KaptCode=@kaptCode AND RepliedAt IS NOT NULL;
+      SELECT @@ROWCOUNT AS Updated;
+    `, { id, memberId: res.locals.memberId, kaptCode: res.locals.kaptCode });
+    if (row?.Updated !== 1) return res.sendStatus(404);
+    res.sendStatus(204);
+  });
+
+  const mediationFields = {
+    mediatorType: 20, mediatorName: 80, mediatorPhone: 30,
+    applicantName: 80, applicantUnit: 100, counterpartName: 80, counterpartUnit: 100,
+    noiseType: 200, damagePeriod: 200, damage: 800, demands: 600,
+    applicantLifestyle: 400, counterpartLifestyle: 400,
+  } as const;
+  const mediationTypes = new Set(['관리주체', '층간소음 관리위원회', '기타']);
+
+  function checkedMediationReport(value: unknown) {
+    const input = objectValue(value);
+    const report = Object.fromEntries(Object.keys(mediationFields).map(key => [key, field(input[key])]));
+    const mediatorOther = report.mediatorType === '기타' ? field(input.mediatorOther) : '';
+    if (Object.entries(mediationFields).some(([key, max]) => !report[key] || report[key].length > max)
+        || !mediationTypes.has(report.mediatorType)
+        || (report.mediatorType === '기타' && (!mediatorOther || mediatorOther.length > 100))) return null;
+    return { ...report, mediatorOther };
+  }
+
+  function checkedMediationEntries(value: unknown) {
+    if (!Array.isArray(value)) return null;
+    const entries = value.map(item => {
+      const row = objectValue(item);
+      return { id: row.id ?? null, date: field(row.date), content: field(row.content) };
+    });
+    const ids = entries.flatMap(entry => entry.id === null ? [] : [entry.id]);
+    if (ids.length !== new Set(ids).size || entries.some(entry => !validDate(entry.date) || !entry.content
+      || entry.content.length > 1600 || (entry.id !== null && (typeof entry.id !== 'number'
+        || !Number.isInteger(entry.id) || entry.id < 1 || entry.id > 2147483647)))) return null;
+    return entries;
+  }
+
+  const mediationEntryInsert = `
+    INSERT dbo.CommitteeMediationEntries(MediationReportId,EntryDate,ContentCipher)
+    SELECT @id,item.EntryDate,dbo.EncryptMemberData(item.Content,@key)
+    FROM OPENJSON(@entries) WITH(EntryId int '$.id',EntryDate date '$.date',Content nvarchar(1600) '$.content') item
+    WHERE item.EntryId IS NULL;
+  `;
+  const mediationEntriesSql = `(SELECT e.EntryId AS id,CONVERT(char(10),e.EntryDate,23) AS date,
+    dbo.DecryptMemberData(e.ContentCipher,@key) AS content
+    FROM dbo.CommitteeMediationEntries e WHERE e.MediationReportId=m.MediationReportId
+    ORDER BY e.EntryDate,e.EntryId FOR JSON PATH)`;
+  function readMediationEntries(data: JsonObject, serialized: string): { id: number | null; date: string; content: string }[] {
+    const entries = JSON.parse(serialized || '[]');
+    return !entries.length && field(data.mediationDetails)
+      ? [{ id: null, date: field(data.mediationDate), content: field(data.mediationDetails) }]
+      : entries;
+  }
+
+  async function mediationSource(kaptCode: string, value: unknown) {
+    if (!Array.isArray(value) || !value.length || value.length > 50
+        || value.some(id => typeof id !== 'string' || !recordPattern.test(id))) {
+      return { error: '중재상담 보고서에 넣을 발생일지 1~50건을 조회해 주세요.' };
+    }
+    const recordNos = [...new Set<string>(value)];
+    const rows = await readIncidents(kaptCode, recordNos);
+    if (rows.length !== recordNos.length) return { error: '철회되었거나 조회할 수 없는 발생일지가 있습니다. 다시 조회해 주세요.' };
+    const first = rows[0];
+    const sameUnit = (a: string, b: string) => [normalized(a), normalized(b)].join('|');
+    const applicantUnit = sameUnit(first.applicantDong, first.applicantHo);
+    const counterpartUnits = new Set(rows.filter(row => row.otherDong || row.otherHo)
+      .map(row => sameUnit(row.otherDong, row.otherHo)));
+    const counterpartNames = new Set(rows.map(row => normalized(row.otherName)).filter(Boolean));
+    if (counterpartUnits.size > 1 || (!counterpartUnits.size && counterpartNames.size > 1)
+        || rows.some(row => row.userId !== first.userId || sameUnit(row.applicantDong, row.applicantHo) !== applicantUnit)) {
+      return { error: '신청세대와 상대세대 한 쌍만 한 보고서에 담을 수 있습니다. 조회 조건을 좁혀 주세요.' };
+    }
+    return { rows, recordNos };
+  }
+
+  router.post('/mediation-reports/prefill', async (req, res) => {
+    const source = await mediationSource(res.locals.kaptCode, req.body?.recordNos);
+    if (!source.rows) {
+      res.status(400).json({ error: source.error });
+      return;
+    }
+    const [first] = source.rows;
+    const counterpart = source.rows.find(row => row.counterpartConfirmed)
+      ?? source.rows.find(row => row.otherName || row.otherHo);
+    const location = (dong: string, ho: string) => [dong && `${dong.replace(/동$/, '')}동`, ho && `${ho.replace(/호$/, '')}호`].filter(Boolean).join(' ');
+    const date = (value: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(new Date(value));
+    const start = date(first.startedAt);
+    const end = date(new Date(Math.max(...source.rows.map(row => Date.parse(row.endedAt)))).toISOString());
+    res.json({
+      applicantName: first.applicantName, applicantUnit: location(first.applicantDong, first.applicantHo),
+      counterpartName: counterpart?.otherName ?? '', counterpartUnit: location(counterpart?.otherDong ?? '', counterpart?.otherHo ?? ''),
+      noiseType: [...new Set(source.rows.map(row => row.noiseType).filter(Boolean))].join(', '),
+      damagePeriod: start === end ? start : `${start} ~ ${end}`,
+      damage: [...new Set(source.rows.map(row => row.damage).filter(Boolean))].join('\n'),
+    });
+  });
+
+  async function visitApplicationSource(kaptCode: string, recordNos: unknown) {
+    const [chair] = await querySql<{ Email: string; MemberJson: string }>(`
+      SELECT TOP(1) dbo.DecryptMemberData(EmailCipher,@key) AS Email,dbo.DecryptMemberData(MemberCipher,@key) AS MemberJson
+      FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode AND Role=N'위원장' AND ApprovedAt IS NOT NULL
+    `, { kaptCode, key: memberDataKey });
+    if (!chair) return { code: 'CHAIR_REQUIRED', error: '위원장이 아직 가입을 하지 않았습니다. 위원장에게 회원가입을 요청하세요' };
+    const source = await mediationSource(kaptCode, recordNos);
+    if (!source.rows) return { code: 'INCIDENTS_UNAVAILABLE', error: source.error };
+    const representative = parseJson(chair.MemberJson);
+    const [complex] = await querySql<{ name: string; address: string }>(`
+      SELECT TOP(1) kaptName AS name,COALESCE(NULLIF(TRIM(roadAddress),N''),NULLIF(TRIM(address),N''),NULLIF(TRIM(legalAddress),N'')) AS address
+      FROM dbo.AptComplexWithDetail WHERE kaptCode=@kaptCode
+    `, { kaptCode });
+    const first = source.rows[0];
+    const counterpart = source.rows.find(row => row.counterpartConfirmed) ?? source.rows.find(row => row.otherName || row.otherHo);
+    const address = (dong: string, ho: string) =>
+      [complex?.address, dong && `${dong.replace(/동$/, '')}동`, ho && `${ho.replace(/호$/, '')}호`].filter(Boolean).join(' ');
+    const date = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' });
+    const start = date.format(new Date(first.startedAt));
+    const end = date.format(new Date(Math.max(...source.rows.map(row => Date.parse(row.endedAt)))));
+    return { recordNos: source.recordNos, data: {
+      complexName: complex?.name ?? '', managerName: '층간소음위원회', representativeName: clean(representative.name, 80),
+      representativePosition: '위원장', managerPhone: clean(representative.contact, 30) || clean(representative.mobile, 30),
+      managerEmail: clean(chair.Email, 254), applicantName: first.applicantName, applicantPhone: first.applicantPhone,
+      applicantAddress: (complex?.address ? address(first.applicantDong, first.applicantHo) : first.applicantAddress).slice(0, 300),
+      counterpartName: counterpart?.otherName ?? '',
+      counterpartPhone: '',
+      counterpartAddress: counterpart?.otherDong || counterpart?.otherHo ? address(counterpart.otherDong, counterpart.otherHo).slice(0, 300) : '',
+      noiseType: [...new Set(source.rows.map(row => row.noiseType).filter(Boolean))].join(', ').slice(0, 200),
+      damage: [start === end ? start : `${start} ~ ${end}`, ...new Set(source.rows.map(row => row.damage).filter(Boolean))].join('\n').slice(0, 1000),
+    } };
+  }
+
+  router.post('/visit-applications/prefill', async (req, res) => {
+    const source = await visitApplicationSource(res.locals.kaptCode, req.body?.recordNos);
+    if (!source.data) {
+      res.status(source.code === 'CHAIR_REQUIRED' ? 409 : 400).json({ error: source.error, code: source.code });
+      return;
+    }
+    res.json(source.data);
+  });
+
+  router.get('/visit-applications', async (req, res) => {
+    const dates = linkedIncidentDates(req.query, 'data.Application');
+    if (!dates) {
+      res.status(400).json({ error: '발생일자의 시작일과 종료일을 확인해 주세요.' });
+      return;
+    }
+    const rows = await querySql<{ Id: number; CreatedAt: Date; Application: string }>(`
+      SELECT m.VisitApplicationId AS Id,m.CreatedAt,data.Application
+      FROM dbo.CommitteeVisitApplications m
+      CROSS APPLY (VALUES (dbo.DecryptMemberData(m.ApplicationCipher,@key))) data(Application)
+      WHERE m.KaptCode=@kaptCode ${dates.sql} ORDER BY m.VisitApplicationId DESC
+    `, { kaptCode: res.locals.kaptCode, key: memberDataKey, startedFrom: dates.startedFrom, startedTo: dates.startedTo });
+    const applications = rows.map(row => ({
+      id: row.Id, serialNo: documentSerial(row.CreatedAt, row.Id), createdAt: row.CreatedAt, data: parseJson(row.Application),
+    })).filter(({ data }) => matchesApplicationHousehold(data, req.query));
+    res.set('Cache-Control', 'private, no-store').json({ applications });
+  });
+
+  router.post('/visit-applications/:id/pdf', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) {
+      res.status(404).json({ error: '방문상담 신청서를 찾을 수 없습니다.' });
+      return;
+    }
+    const [row] = await querySql<{ Application: string }>(`
+      SELECT dbo.DecryptMemberData(ApplicationCipher,@key) AS Application
+      FROM dbo.CommitteeVisitApplications WHERE VisitApplicationId=@id AND KaptCode=@kaptCode
+    `, { id, kaptCode: res.locals.kaptCode, key: memberDataKey });
+    if (!row) {
+      res.status(404).json({ error: '방문상담 신청서를 찾을 수 없습니다.' });
+      return;
+    }
+    const pdf = await createVisitApplicationPdf(id, parseJson(row.Application));
+    res.type('application/pdf').set('Cache-Control', 'private, no-store').send(pdf);
+  });
+
+  router.post('/visit-applications', async (req, res) => {
+    const input = objectValue(req.body?.application);
+    const applicationDate = field(input.applicationDate);
+    const requestId = field(req.body?.requestId);
+    if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(requestId)
+        || !validDate(applicationDate)) {
+      res.status(400).json({ error: '신청일을 확인해 주세요.' });
+      return;
+    }
+    const source = await visitApplicationSource(res.locals.kaptCode, req.body?.recordNos);
+    if (!source.data) {
+      res.status(409).json({ error: source.error, code: source.code });
+      return;
+    }
+    const payload = JSON.stringify({ ...source.data, applicationDate, recordNos: source.recordNos });
+    if (payload.length > 3500) {
+      res.status(400).json({ error: '신청서 내용이 너무 깁니다. 피해내용을 줄여 주세요.' });
+      return;
+    }
+    const [saved] = await querySql<{ Id: number }>(`
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+      ${ensureVisibleDocumentIncidents}
+      DECLARE @id int=(SELECT VisitApplicationId FROM dbo.CommitteeVisitApplications WITH(UPDLOCK,HOLDLOCK)
+        WHERE KaptCode=@kaptCode AND CreatedBy=@memberId AND RequestId=@requestId);
+      IF @id IS NULL
+      BEGIN
+        INSERT dbo.CommitteeVisitApplications(KaptCode,CreatedBy,RequestId,ApplicationCipher)
+          VALUES(@kaptCode,@memberId,@requestId,dbo.EncryptMemberData(@payload,@key));
+        SET @id=CONVERT(int,SCOPE_IDENTITY());
+      END;
+      COMMIT TRANSACTION;
+      SELECT @id AS Id;
+    `, { kaptCode: res.locals.kaptCode, memberId: res.locals.memberId, requestId, payload, key: memberDataKey });
+    if (!saved) return res.status(409).json({ error: '선택한 발생일지가 변경되었습니다. 다시 조회해 주세요.' });
+    res.status(201).json({ id: saved.Id });
+  });
+
+  const measurementFields = {
+    visitDate: 10, postVisitNoise: 1000, applicationDate: 10,
+  } as const;
+
+  async function measurementApplicant(kaptCode: string, incident: CommitteeIncident) {
+    const [identity] = await querySql<{ Name: string | null; Email: string | null }>(`
+      SELECT TOP(1) apt.kaptName AS Name, dbo.DecryptMemberData(u.EmailCipher,@key) AS Email
+      FROM dbo.AppUsers u
+      LEFT JOIN dbo.AptComplexWithDetail apt ON apt.kaptCode=@kaptCode
+      WHERE u.UserId=@userId
+    `, { kaptCode, userId: incident.userId, key: memberDataKey });
+    return {
+      applicantName: incident.applicantName, applicantPhone: incident.applicantPhone,
+      applicantEmail: identity?.Email ?? '', complexName: identity?.Name ?? '',
+      applicantAddress: incident.applicantAddress,
+    };
+  }
+
+  function measurementCounterpart(rows: CommitteeIncident[]) {
+    const counterpart = rows.find(row => row.counterpartConfirmed) ?? rows.find(row => row.otherName || row.otherHo || row.otherDong);
+    const dong = counterpart?.otherDong, ho = counterpart?.otherHo;
+    return {
+      counterpartName: counterpart?.otherName ?? '',
+      counterpartAddress: [dong && `${dong.replace(/동$/, '')}동`, ho && `${ho.replace(/호$/, '')}호`].filter(Boolean).join(' '),
+    };
+  }
+
+  function measurementNoise(rows: CommitteeIncident[]) {
+    const dateTime = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+    return {
+      noiseType: [...new Set(rows.map(row => row.noiseType).filter(Boolean))].join(', ').slice(0, 250),
+      noiseTime: [...new Set(rows.map(row => `${dateTime.format(new Date(row.startedAt))} ~ ${dateTime.format(new Date(row.endedAt))}`))]
+        .join('\n').slice(0, 400),
+    };
+  }
+
+  router.post('/measurement-applications/prefill', async (req, res) => {
+    const kaptCode: string = res.locals.kaptCode;
+    const source = await mediationSource(kaptCode, req.body?.recordNos);
+    if (!source.rows) {
+      res.status(400).json({ error: source.error });
+      return;
+    }
+    res.json({
+      ...await measurementApplicant(kaptCode, source.rows[0]),
+      ...measurementNoise(source.rows),
+      ...measurementCounterpart(source.rows),
+    });
+  });
+
+  router.get('/measurement-applications', async (req, res) => {
+    const dates = linkedIncidentDates(req.query, 'data.Application');
+    if (!dates) {
+      res.status(400).json({ error: '발생일자의 시작일과 종료일을 확인해 주세요.' });
+      return;
+    }
+    const rows = await querySql<{ Id: number; CreatedAt: Date; Application: string }>(`
+      SELECT m.MeasurementApplicationId AS Id,m.CreatedAt,data.Application
+      FROM dbo.CommitteeMeasurementApplications m
+      CROSS APPLY (VALUES (dbo.DecryptMemberData(m.ApplicationCipher,@key))) data(Application)
+      WHERE m.KaptCode=@kaptCode ${dates.sql} ORDER BY m.MeasurementApplicationId DESC
+    `, { kaptCode: res.locals.kaptCode, key: memberDataKey, startedFrom: dates.startedFrom, startedTo: dates.startedTo });
+    const applications = rows.map(row => ({ id: row.Id, serialNo: documentSerial(row.CreatedAt, row.Id),
+      createdAt: row.CreatedAt, data: parseJson(row.Application) }))
+      .filter(({ data }) => matchesApplicationHousehold(data, req.query));
+    res.set('Cache-Control', 'private, no-store').json({ applications });
+  });
+
+  router.post('/measurement-applications', async (req, res) => {
+    const input = objectValue(req.body?.application);
+    const application = Object.fromEntries(Object.keys(measurementFields).map(key => [key, field(input[key])]));
+    const requestId = field(req.body?.requestId);
+    if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(requestId)
+        || Object.entries(measurementFields).some(([key, max]) => !application[key] || application[key].length > max)
+        || !validDate(application.applicationDate) || !validDate(application.visitDate) || application.visitDate > application.applicationDate) {
+      res.status(400).json({ error: '필수 항목을 확인해 주세요. 신청일은 방문상담일과 같거나 이후여야 합니다.' });
+      return;
+    }
+    const source = await mediationSource(res.locals.kaptCode, req.body?.recordNos);
+    if (!source.rows) {
+      res.status(409).json({ error: source.error });
+      return;
+    }
+    const applicant = await measurementApplicant(res.locals.kaptCode, source.rows[0]);
+    if (Object.values(applicant).some(value => !value.trim()) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(applicant.applicantEmail)) {
+      res.status(409).json({ error: '발생일지의 신청인 정보와 신청세대의 가입 이메일을 확인해 주세요.' });
+      return;
+    }
+    const noise = measurementNoise(source.rows);
+    if (!noise.noiseType || !noise.noiseTime) {
+      res.status(409).json({ error: '선택된 발생일지의 소음유형과 발생일시를 확인해 주세요.' });
+      return;
+    }
+    const payload = JSON.stringify({ ...application, ...applicant, ...noise,
+      ...measurementCounterpart(source.rows), recordNos: source.recordNos });
+    if (payload.length > 3500) {
+      res.status(400).json({ error: '신청서 내용이 너무 깁니다. 서술 항목을 줄여 주세요.' });
+      return;
+    }
+    const [saved] = await querySql<{ Id: number }>(`
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+      ${ensureVisibleDocumentIncidents}
+      DECLARE @id int=(SELECT MeasurementApplicationId FROM dbo.CommitteeMeasurementApplications WITH(UPDLOCK,HOLDLOCK)
+        WHERE KaptCode=@kaptCode AND CreatedBy=@memberId AND RequestId=@requestId);
+      IF @id IS NULL
+      BEGIN
+        INSERT dbo.CommitteeMeasurementApplications(KaptCode,CreatedBy,RequestId,ApplicationCipher)
+          VALUES(@kaptCode,@memberId,@requestId,dbo.EncryptMemberData(@payload,@key));
+        SET @id=CONVERT(int,SCOPE_IDENTITY());
+      END;
+      COMMIT TRANSACTION;
+      SELECT @id AS Id;
+    `, { kaptCode: res.locals.kaptCode, memberId: res.locals.memberId, requestId, payload, key: memberDataKey });
+    if (!saved) return res.status(409).json({ error: '선택한 발생일지가 변경되었습니다. 다시 조회해 주세요.' });
+    res.status(201).json({ id: saved.Id });
+  });
+
+  router.get('/mediation-reports', async (req, res) => {
+    const dates = linkedIncidentDates(req.query, 'data.Report');
+    if (!dates) {
+      res.status(400).json({ error: '발생일자의 시작일과 종료일을 확인해 주세요.' });
+      return;
+    }
+    const rows = await querySql<{ MediationReportId: number; ReportNo: string; CreatedAt: Date; Report: string; Version: string; Entries: string }>(`
+      SELECT m.MediationReportId,m.ReportNo,m.CreatedAt,data.Report,
+        CONVERT(char(64),HASHBYTES('SHA2_256',m.ReportCipher),2) AS Version,
+        ${mediationEntriesSql} AS Entries
+      FROM dbo.CommitteeMediationReports m
+      CROSS APPLY (VALUES (dbo.DecryptMemberData(m.ReportCipher,@key))) data(Report)
+      WHERE m.KaptCode=@kaptCode ${dates.sql} ORDER BY m.MediationReportId DESC
+    `, { kaptCode: res.locals.kaptCode, key: memberDataKey, startedFrom: dates.startedFrom, startedTo: dates.startedTo });
+    const reports = rows.map(row => {
+      const data = parseJson(row.Report);
+      const entries = readMediationEntries(data, row.Entries);
+      return { id: row.MediationReportId, reportNo: row.ReportNo, createdAt: row.CreatedAt, version: row.Version, data, entries };
+    })
+      .filter(({ data }) => {
+        const applicantUnit = estimatedUnitFields(field(data.applicantUnit));
+        const counterpartUnit = estimatedUnitFields(field(data.counterpartUnit));
+        return matchesHouseholdFilters({
+          applicantName: field(data.applicantName), applicantDong: applicantUnit.estimatedDong, applicantHo: applicantUnit.estimatedHo,
+          otherName: field(data.counterpartName), otherDong: counterpartUnit.estimatedDong, otherHo: counterpartUnit.estimatedHo,
+        }, req.query);
+      });
+    res.json({ reports });
+  });
+
+  router.post('/mediation-reports/:id/pdf', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) {
+      res.status(404).json({ error: '중재상담 보고서를 찾을 수 없습니다.' });
+      return;
+    }
+    const [row] = await querySql<{ ReportNo: string; Report: string; Entries: string }>(`
+      SELECT m.ReportNo,dbo.DecryptMemberData(m.ReportCipher,@key) AS Report,${mediationEntriesSql} AS Entries
+      FROM dbo.CommitteeMediationReports m WHERE m.MediationReportId=@id AND m.KaptCode=@kaptCode
+    `, { id, kaptCode: res.locals.kaptCode, key: memberDataKey });
+    if (!row) {
+      res.status(404).json({ error: '중재상담 보고서를 찾을 수 없습니다.' });
+      return;
+    }
+    const data = parseJson(row.Report);
+    const pdf = await createMediationPdf(row.ReportNo, data, readMediationEntries(data, row.Entries));
+    res.type('application/pdf').set('Cache-Control', 'private, no-store').send(pdf);
+  });
+
+  router.post('/mediation-reports', async (req, res) => {
+    const requestId = field(req.body?.requestId);
+    const report = checkedMediationReport(req.body?.report);
+    const entries = checkedMediationEntries(req.body?.entries);
+    if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(requestId)
+        || !report || !entries?.length || entries.some(entry => entry.id !== null)) {
+      res.status(400).json({ error: '모든 필수 항목과 중재내용의 기록일 및 내용을 확인해 주세요.' });
+      return;
+    }
+    const source = await mediationSource(res.locals.kaptCode, req.body?.recordNos);
+    if (!source.rows) {
+      res.status(409).json({ error: source.error });
+      return;
+    }
+    const payload = JSON.stringify({ ...report, recordNos: source.recordNos });
+    if (payload.length > 3500) {
+      res.status(400).json({ error: '보고서 내용이 너무 깁니다. 서술 항목의 분량을 줄여 주세요.' });
+      return;
+    }
+    const [saved] = await querySql<{ Id: number; ReportNo: string }>(`
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+      ${ensureVisibleDocumentIncidents}
+      DECLARE @createdAt datetime2(0)=SYSUTCDATETIME();
+      DECLARE @datePrefix char(8)=CONVERT(char(8),DATEADD(hour,9,@createdAt),112);
+      DECLARE @resource nvarchar(255)=CONCAT(N'CommitteeMediationReportNo:',@datePrefix), @lockResult int;
+      EXEC @lockResult=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockTimeout=5000;
+      IF @lockResult<0 THROW 51065,'Mediation report numbering is busy.',1;
+
+      DECLARE @id int, @reportNo varchar(13);
+      SELECT @id=MediationReportId,@reportNo=ReportNo FROM dbo.CommitteeMediationReports WITH(UPDLOCK,HOLDLOCK)
+      WHERE KaptCode=@kaptCode AND CreatedBy=@memberId AND RequestId=@requestId;
+      IF @id IS NULL
+      BEGIN
+        DECLARE @dailyNumber int=(SELECT COALESCE(MAX(CONVERT(int,RIGHT(ReportNo,4))),0)+1
+          FROM dbo.CommitteeMediationReports WHERE ReportNo LIKE @datePrefix+'[_]%');
+        IF @dailyNumber>9999 THROW 51064,'Daily mediation report number limit exceeded.',1;
+        SET @reportNo=@datePrefix+'_'+RIGHT('0000'+CONVERT(varchar(4),@dailyNumber),4);
+        INSERT dbo.CommitteeMediationReports(KaptCode,CreatedBy,RequestId,ReportCipher,CreatedAt,ReportNo)
+          VALUES(@kaptCode,@memberId,@requestId,dbo.EncryptMemberData(@payload,@key),@createdAt,@reportNo);
+        SET @id=CONVERT(int,SCOPE_IDENTITY());
+        ${mediationEntryInsert}
+      END;
+      COMMIT TRANSACTION;
+      SELECT @id AS Id,@reportNo AS ReportNo;
+    `, { kaptCode: res.locals.kaptCode, memberId: res.locals.memberId, requestId, payload,
+      entries: JSON.stringify(entries), key: memberDataKey });
+    if (!saved) return res.status(409).json({ error: '선택한 발생일지가 변경되었습니다. 다시 조회해 주세요.' });
+    res.status(201).json({ id: saved.Id, reportNo: saved.ReportNo });
+  });
+
+  router.put('/mediation-reports/:id', async (req, res) => {
+    const id = Number(req.params.id);
+    const version = field(req.body?.version);
+    const entries = checkedMediationEntries(req.body?.entries);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647 || !/^[\dA-F]{64}$/.test(version)
+        || !entries) {
+      res.status(400).json({ error: '중재내용의 날짜와 내용을 확인해 주세요.' });
+      return;
+    }
+    try {
+      const [saved] = await querySql<{ ReportNo: string }>(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        DECLARE @old nvarchar(max), @reportNo varchar(13);
+        SELECT @old=dbo.DecryptMemberData(ReportCipher,@key),@reportNo=ReportNo
+        FROM dbo.CommitteeMediationReports WITH(UPDLOCK,HOLDLOCK) WHERE MediationReportId=@id AND KaptCode=@kaptCode
+          AND CONVERT(char(64),HASHBYTES('SHA2_256',ReportCipher),2)=@version;
+        IF @reportNo IS NULL THROW 51066,'Mediation report changed.',1;
+        UPDATE dbo.CommitteeMediationReports SET ReportCipher=dbo.EncryptMemberData(@old,@key)
+        WHERE MediationReportId=@id AND KaptCode=@kaptCode;
+        UPDATE e SET EntryDate=item.EntryDate,ContentCipher=dbo.EncryptMemberData(item.Content,@key)
+        FROM dbo.CommitteeMediationEntries e
+        JOIN OPENJSON(@entries) WITH(EntryId int '$.id',EntryDate date '$.date',Content nvarchar(1600) '$.content') item
+          ON item.EntryId=e.EntryId WHERE e.MediationReportId=@id;
+        IF @@ROWCOUNT<>@editCount THROW 51066,'Mediation entries changed.',1;
+        ${mediationEntryInsert}
+        IF NOT EXISTS(SELECT 1 FROM dbo.CommitteeMediationEntries WHERE MediationReportId=@id)
+          THROW 51068,'Mediation entry required.',1;
+        COMMIT TRANSACTION;
+        SELECT @reportNo AS ReportNo;
+      `, { id, version, kaptCode: res.locals.kaptCode, key: memberDataKey,
+        entries: JSON.stringify(entries), editCount: entries.filter(entry => entry.id !== null).length });
+      res.json({ reportNo: saved.ReportNo });
+    } catch (error) {
+      const number = (error as { number?: number }).number;
+      if (number === 51066) res.status(409).json({ error: '보고서가 변경되었거나 조회할 수 없습니다. 목록을 다시 조회해 주세요.' });
+      else if (number === 51068) res.status(400).json({ error: '날짜가 있는 중재내용을 한 건 이상 입력해 주세요.' });
+      else throw error;
+    }
+  });
+
+  const linkedCommitteeDocuments = `
+    SELECT linked.RecordNo FROM (
+      SELECT ReportCipher AS Cipher FROM dbo.CommitteeMediationReports WHERE KaptCode=@kaptCode
+      UNION ALL
+      SELECT ApplicationCipher FROM dbo.CommitteeVisitApplications WHERE KaptCode=@kaptCode
+      UNION ALL
+      SELECT ApplicationCipher FROM dbo.CommitteeMeasurementApplications WHERE KaptCode=@kaptCode
+    ) documents
+    CROSS APPLY (VALUES (dbo.DecryptMemberData(documents.Cipher,@key))) data(Document)
+    CROSS APPLY OPENJSON(CASE WHEN ISJSON(data.Document)=1 THEN data.Document END,'$.recordNos')
+      WITH (RecordNo varchar(13) '$') linked
+  `;
+
   router.get('/incidents', async (req, res) => {
-    const filterKeys = ['applicantName', 'applicantDong', 'applicantHo', 'otherName', 'otherDong', 'otherHo'] as const;
-    const rows = (await readIncidents(res.locals.kaptCode)).filter(row => filterKeys.every(key => {
-      const query = normalized(field(req.query[key]));
-      if (!query) return true;
-      const actual = normalized(row[key]);
-      if (key.endsWith('Dong')) return actual.replace(/동$/, '') === query.replace(/동$/, '');
-      if (key.endsWith('Ho')) return actual.replace(/호$/, '') === query.replace(/호$/, '');
-      return actual.includes(query);
-    })).reverse();
-    res.json({ incidents: rows.map(row => ({
+    const kaptCode = res.locals.kaptCode;
+    const rows = (await readIncidents(kaptCode)).filter(row => matchesHouseholdFilters(row, req.query)).reverse();
+    const linked = rows.length
+      ? await querySql<{ RecordNo: string }>(`SELECT DISTINCT RecordNo FROM (${linkedCommitteeDocuments}) links`, { kaptCode, key: memberDataKey })
+      : [];
+    const linkedRecords = new Set(linked.map(row => row.RecordNo));
+    res.json({ reportAvailable: await hasReportSchema(), incidents: rows.map(row => ({
       recordNo: row.recordNo, userId: row.userId, startedAt: row.startedAt,
       applicantName: row.applicantName, applicantPhone: row.applicantPhone,
       applicantDong: row.applicantDong, applicantHo: row.applicantHo,
       noiseType: row.noiseType, durationOrCount: row.durationOrCount,
       otherName: row.otherName, otherDong: row.otherDong, otherHo: row.otherHo,
+      estimatedDong: row.estimatedDong, estimatedHo: row.estimatedHo,
+      residentSelected: true, reportKey: row.reportKey, reportId: row.reportId, reportNo: row.reportNo,
+      canHide: !row.reportKey && !linkedRecords.has(row.recordNo),
+      counterpartConfirmed: row.counterpartConfirmed,
       integrityStatus: row.integrityStatus, integrityCheckedAt: row.integrityCheckedAt,
     })) });
+  });
+
+  router.post('/reports', async (req, res) => {
+    if (!await hasReportSchema()) {
+      res.status(503).json({ error: '층간소음보고서 저장소가 준비되지 않았습니다.' });
+      return;
+    }
+    const recordNos: unknown = req.body?.recordNos;
+    if (!Array.isArray(recordNos) || !recordNos.length || recordNos.length > 500
+        || recordNos.some(value => typeof value !== 'string' || !recordPattern.test(value))) {
+      res.status(400).json({ error: '한 번에 발생일지 1~500건을 보고할 수 있습니다.' });
+      return;
+    }
+    const unique = [...new Set<string>(recordNos)];
+    const kaptCode: string = res.locals.kaptCode;
+    const rows = await readIncidents(kaptCode, unique);
+    const pending = rows.filter(row => !row.reportKey);
+    const confirmed = pending.filter(row => row.counterpartConfirmed);
+    const skipped = {
+      unconfirmed: pending.length - confirmed.length,
+      alreadyReported: rows.length - pending.length,
+      unavailable: unique.length - rows.length,
+    };
+    if (!confirmed.length) {
+      res.status(409).json({ error: '층간소음보고서로 이관할 수 있는 발생일지가 없습니다.', skippedReasons: skipped });
+      return;
+    }
+    const params: Record<string, unknown> = { kaptCode, memberId: Number(res.locals.memberId) };
+    const pairKeys = new Set<string>();
+    const values = confirmed.map((row, index) => {
+      const pairKey = reportPairKey(kaptCode, row);
+      pairKeys.add(pairKey);
+      Object.assign(params, { [`r${index}`]: row.recordNo, [`s${index}`]: row.submissionVersion,
+        [`o${index}`]: row.counterpartVersion, [`p${index}`]: pairKey });
+      return `(@r${index},@s${index},@o${index},@p${index})`;
+    }).join(',');
+    try {
+      await querySql(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        DECLARE @lockResult int, @resource nvarchar(255)=CONCAT(N'CommitteeReport:',@kaptCode);
+        EXEC @lockResult=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockTimeout=5000;
+        IF @lockResult<0 THROW 51061,'Report is busy.',1;
+        INSERT dbo.CommitteeReportIncidents(RecordNo,KaptCode,PairKey,AddedBy)
+        SELECT s.RecordNo,s.KaptCode,selected.PairKey,@memberId
+        FROM (VALUES ${values}) selected(RecordNo,SubmissionVersion,CounterpartVersion,PairKey)
+        JOIN dbo.CommitteeSubmissions s WITH(UPDLOCK,HOLDLOCK) ON s.RecordNo=selected.RecordNo
+        JOIN dbo.CommitteeCounterpartOverrides o WITH(UPDLOCK,HOLDLOCK) ON o.RecordNo=s.RecordNo AND o.KaptCode=s.KaptCode
+        WHERE s.KaptCode=@kaptCode AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL
+          AND s.SubmissionVersion=CONVERT(binary(8),selected.SubmissionVersion,1)
+          AND CONVERT(char(64),HASHBYTES('SHA2_256',o.DataCipher),2)=selected.CounterpartVersion
+          AND NOT EXISTS(SELECT 1 FROM dbo.CommitteeReportIncidents report WHERE report.RecordNo=s.RecordNo);
+        IF @@ROWCOUNT<>${confirmed.length} THROW 51061,'Report inputs changed.',1;
+        INSERT dbo.CommitteeNoiseReports(KaptCode,PairKey)
+        SELECT DISTINCT @kaptCode,selected.PairKey
+        FROM (VALUES ${values}) selected(RecordNo,SubmissionVersion,CounterpartVersion,PairKey)
+        WHERE NOT EXISTS (SELECT 1 FROM dbo.CommitteeNoiseReports document
+          WHERE document.KaptCode=@kaptCode AND document.PairKey=selected.PairKey);
+        COMMIT TRANSACTION;
+      `, params);
+    } catch (error) {
+      if ((error as { number?: number }).number !== 51061) throw error;
+      res.status(409).json({ error: '발생일지나 상대세대 정보가 변경되었습니다. 목록을 새로 조회해 주세요.' });
+      return;
+    }
+    res.status(201).json({ added: confirmed.length, reports: pairKeys.size, skipped: unique.length - confirmed.length,
+      skippedReasons: skipped });
+  });
+
+  for (const [route, table, idColumn] of [
+    ['visit-applications', 'CommitteeVisitApplications', 'VisitApplicationId'],
+    ['measurement-applications', 'CommitteeMeasurementApplications', 'MeasurementApplicationId'],
+    ['mediation-reports', 'CommitteeMediationReports', 'MediationReportId'],
+    ['reports', 'CommitteeNoiseReports', 'ReportId'],
+  ]) {
+    router.delete(`/${route}`, async (req, res) => {
+      const ids: unknown = req.body?.ids;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 500
+          || ids.some(id => !Number.isInteger(id) || id < 1 || id > 2147483647)) {
+        res.status(400).json({ error: '삭제할 항목을 1~500건 선택해 주세요.' });
+        return;
+      }
+      const kaptCode = res.locals.kaptCode;
+      const selected = 'SELECT [value] FROM OPENJSON(@ids) WITH ([value] int \'$\')';
+      const [result] = await querySql<{ Deleted: number }>(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        ${route === 'mediation-reports' ? `
+          DECLARE @matched TABLE (Id int PRIMARY KEY);
+          INSERT @matched(Id)
+          SELECT MediationReportId FROM dbo.CommitteeMediationReports WITH (XLOCK,HOLDLOCK)
+          WHERE KaptCode=@kaptCode AND MediationReportId IN (${selected});
+          DELETE FROM dbo.CommitteeMediationEntries WHERE MediationReportId IN (SELECT Id FROM @matched);
+        ` : ''}
+        ${route === 'reports' ? `
+          DECLARE @lockResult int, @resource nvarchar(255)=CONCAT(N'CommitteeReport:',@kaptCode);
+          EXEC @lockResult=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockTimeout=5000;
+          IF @lockResult<0 THROW 51061,'Report is busy.',1;
+          DELETE links FROM dbo.CommitteeReportIncidents links
+          JOIN dbo.CommitteeNoiseReports report ON report.KaptCode=links.KaptCode AND report.PairKey=links.PairKey
+          WHERE report.KaptCode=@kaptCode AND report.ReportId IN (${selected});
+        ` : ''}
+        DELETE FROM dbo.${table} WHERE KaptCode=@kaptCode
+          AND ${idColumn} IN (${route === 'mediation-reports' ? 'SELECT Id FROM @matched' : selected});
+        DECLARE @deleted int=@@ROWCOUNT;
+        COMMIT TRANSACTION;
+        SELECT @deleted AS Deleted;
+      `, { kaptCode, ids: JSON.stringify([...new Set(ids)]) });
+      res.json({ deleted: result.Deleted });
+    });
+  }
+
+  router.delete('/incidents', async (req, res) => {
+    const recordNos: unknown = req.body?.ids;
+    if (!Array.isArray(recordNos) || !recordNos.length || recordNos.length > 500
+        || recordNos.some(recordNo => typeof recordNo !== 'string' || !recordPattern.test(recordNo))) {
+      res.status(400).json({ error: '삭제할 발생일지를 1~500건 선택해 주세요.' });
+      return;
+    }
+    const ids = [...new Set<string>(recordNos)];
+    const reportsReady = await hasReportSchema();
+    try {
+      const [result] = await querySql<{ Deleted: number }>(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        DECLARE @lockResult int, @resource nvarchar(255)=CONCAT(N'CommitteeReport:',@kaptCode);
+        EXEC @lockResult=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockTimeout=5000;
+        IF @lockResult<0 THROW 51061,'Report is busy.',1;
+        UPDATE submission SET CommitteeHiddenAt=SYSUTCDATETIME()
+        FROM dbo.CommitteeSubmissions submission
+        JOIN OPENJSON(@ids) WITH (RecordNo varchar(13) '$') selected ON selected.RecordNo=submission.RecordNo
+        WHERE submission.KaptCode=@kaptCode AND submission.WithdrawnAt IS NULL AND submission.CommitteeHiddenAt IS NULL
+          AND NOT EXISTS (SELECT 1 FROM (${linkedCommitteeDocuments}) links WHERE links.RecordNo=submission.RecordNo)
+          ${reportsReady ? `AND NOT EXISTS (SELECT 1 FROM dbo.CommitteeReportIncidents report
+            WHERE report.KaptCode=submission.KaptCode AND report.RecordNo=submission.RecordNo)` : ''};
+        DECLARE @deleted int=@@ROWCOUNT;
+        IF @deleted<>@expected THROW 51061,'Incident selection changed.',1;
+        COMMIT TRANSACTION;
+        SELECT @deleted AS Deleted;
+      `, { kaptCode: res.locals.kaptCode, ids: JSON.stringify(ids), expected: ids.length, key: memberDataKey });
+      res.json({ deleted: result.Deleted });
+    } catch (error) {
+      if ((error as { number?: number }).number !== 51061) throw error;
+      res.status(409).json({ error: '선택한 일지가 변경되었거나 이미 보고서 또는 신청서에 포함되어 있습니다. 목록을 다시 조회해 주세요.' });
+    }
   });
 
   router.get('/incidents/:recordNo', async (req, res) => {
@@ -718,6 +1508,9 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
     try {
       const result = await verifyIntegrity(res.locals.kaptCode, req.params.recordNo, res.locals.memberId, emailFrom);
       res.json(result);
+    } catch (error) {
+      if ((error as { number?: number }).number !== 51050) throw error;
+      res.status(404).json({ error: '발생일지를 찾을 수 없습니다.' });
     } finally {
       activeIntegrityChecks.delete(key);
     }
@@ -730,19 +1523,25 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
     }
     const name = clean(req.body?.name, 80);
     const dong = clean(req.body?.dong, 20).replace(/동$/, '');
-    const ho = clean(req.body?.ho, 20).replace(/호$/, '');
+    const ho = normalizeRoomNumber(req.body?.ho).slice(0, 20);
     const estimatedPlace = clean(req.body?.estimatedPlace, 200);
     if (/[<>\r\n]/.test(name + dong + ho + estimatedPlace)) {
       res.status(400).json({ error: '상대세대 정보를 확인해 주세요.' });
       return;
     }
     const data = JSON.stringify({ name, dong, ho, estimatedPlace });
+    const reportsReady = await hasReportSchema();
     const [saved] = await querySql<{ UpdatedAt: Date; Editor: string }>(`
       SET XACT_ABORT ON;
       BEGIN TRANSACTION;
       IF NOT EXISTS(SELECT 1 FROM dbo.CommitteeSubmissions WITH(UPDLOCK,HOLDLOCK)
-        WHERE RecordNo=@recordNo AND KaptCode=@kaptCode AND WithdrawnAt IS NULL)
+        WHERE RecordNo=@recordNo AND KaptCode=@kaptCode AND WithdrawnAt IS NULL AND CommitteeHiddenAt IS NULL)
         THROW 51051,'Committee submission not found.',1;
+      ${reportsReady ? `IF EXISTS(SELECT 1 FROM dbo.CommitteeReportIncidents WHERE RecordNo=@recordNo AND KaptCode=@kaptCode)
+      BEGIN
+        COMMIT TRANSACTION;
+        RETURN;
+      END;` : ''}
       DECLARE @previous varbinary(max)=(SELECT DataCipher FROM dbo.CommitteeCounterpartOverrides WHERE RecordNo=@recordNo);
       INSERT dbo.CommitteeCounterpartHistory(RecordNo,KaptCode,EditorMemberId,PreviousCipher,NewCipher)
       VALUES(@recordNo,@kaptCode,@memberId,@previous,dbo.EncryptMemberData(@data,@key));
@@ -756,8 +1555,12 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       COMMIT TRANSACTION;
     `, { recordNo: req.params.recordNo, kaptCode: res.locals.kaptCode, memberId: res.locals.memberId,
       data, key: memberDataKey });
+    if (!saved) {
+      res.status(409).json({ error: '보고서에 포함된 발생일지의 상대세대 확인 정보는 수정할 수 없습니다.' });
+      return;
+    }
     const editor = parseJson(saved?.Editor ?? null);
-    res.json({ recordNo: req.params.recordNo, name, dong, ho, estimatedPlace,
+    res.json({ recordNo: req.params.recordNo, name, dong, ho, estimatedPlace, counterpartConfirmed: Boolean(name && ho), ...estimatedUnitFields(estimatedPlace),
       updatedAt: saved?.UpdatedAt.toISOString() ?? new Date().toISOString(), updatedBy: clean(editor.name, 80) });
   });
 
@@ -772,7 +1575,7 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       FROM dbo.CommitteeCounterpartHistory h JOIN dbo.CommitteeMembers m ON m.MemberId=h.EditorMemberId
       WHERE h.RecordNo=@recordNo AND h.KaptCode=@kaptCode
         AND EXISTS(SELECT 1 FROM dbo.CommitteeSubmissions s WHERE s.RecordNo=h.RecordNo
-          AND s.KaptCode=h.KaptCode AND s.WithdrawnAt IS NULL)
+          AND s.KaptCode=h.KaptCode AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL)
       ORDER BY h.ChangedAt DESC,h.HistoryId DESC;
     `, { recordNo: req.params.recordNo, kaptCode: res.locals.kaptCode, key: memberDataKey });
     res.json({ history: rows.map(row => {
@@ -807,7 +1610,8 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       BEGIN TRANSACTION;
       DECLARE @userId int,@artifactId bigint,@eventId bigint,@notificationId bigint,@notificationCreated bit=0;
       SELECT @userId=UserId,@artifactId=SubmissionArtifactId FROM dbo.CommitteeSubmissions WITH(UPDLOCK,HOLDLOCK)
-      WHERE RecordNo=@recordNo AND KaptCode=@kaptCode AND WithdrawnAt IS NULL AND IntegrityStatus='MISMATCH_BLOCKED';
+      WHERE RecordNo=@recordNo AND KaptCode=@kaptCode AND WithdrawnAt IS NULL AND CommitteeHiddenAt IS NULL
+        AND IntegrityStatus='MISMATCH_BLOCKED';
       IF @userId IS NULL THROW 51052,'Blocked integrity case not found.',1;
       UPDATE dbo.CommitteeSubmissions SET IntegrityResolvedAt=SYSUTCDATETIME(),
         IntegrityResolvedBy=@memberId,IntegrityResolutionCipher=dbo.EncryptMemberData(@resolution,@key)
@@ -877,7 +1681,7 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
         SELECT a.AudioLength FROM dbo.CommitteeSubmissions s
         JOIN dbo.CommitteeSubmissionArtifacts a ON a.ArtifactId=s.SubmissionArtifactId
           AND a.RecordNo=s.RecordNo AND a.UserId=s.UserId
-        WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL
+        WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL
       `, { kaptCode: res.locals.kaptCode, recordNo: req.params.recordNo });
       if (!recording) {
         res.status(404).json({ error: '녹음 파일을 찾을 수 없습니다.' });
@@ -895,7 +1699,7 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
           FROM dbo.CommitteeSubmissions s
           JOIN dbo.CommitteeSubmissionArtifacts a ON a.ArtifactId=s.SubmissionArtifactId
             AND a.RecordNo=s.RecordNo AND a.UserId=s.UserId
-          WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL
+          WHERE s.KaptCode=@kaptCode AND s.RecordNo=@recordNo AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL
         `, { kaptCode: res.locals.kaptCode, recordNo: req.params.recordNo, offset: start + 1, count });
         return content?.AudioData ?? null;
       };
@@ -939,14 +1743,59 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
 
   let activeExports = 0;
   const lastExportByMember = new Map<number, number>();
+  router.post('/incident-log-form', async (req, res) => {
+    const kaptCode: string = res.locals.kaptCode;
+    const reportKey = field(req.body?.reportKey);
+    const recordNos: unknown = req.body?.recordNos;
+    if (reportKey ? !/^[a-f0-9]{64}$/.test(reportKey) : !Array.isArray(recordNos) || !recordNos.length
+      || recordNos.length > 500 || recordNos.some(recordNo => typeof recordNo !== 'string' || !recordPattern.test(recordNo))) {
+      return res.status(400).json({ error: '확인할 발생일지를 선택해 주세요.' });
+    }
+    const selected = reportKey ? undefined : [...new Set(recordNos as string[])];
+    const rows = await readIncidents(kaptCode, selected, reportKey || undefined);
+    if (!rows.length || (selected && rows.length !== selected.length)) {
+      return res.status(409).json({ error: '일부 발생일지를 조회할 수 없습니다. 목록을 다시 조회해 주세요.' });
+    }
+    const [complex] = await querySql<{ Name: string; Address: string | null }>(`
+      SELECT TOP (1) kaptName AS Name, COALESCE(NULLIF(TRIM(roadAddress),N''),NULLIF(TRIM(address),N''),NULLIF(TRIM(legalAddress),N'')) AS Address
+      FROM dbo.AptComplexWithDetail WHERE kaptCode=@kaptCode
+    `, { kaptCode });
+    const groups = new Map<string, { applicantName: string; applicantPhone: string; applicantAddress: string;
+      entries: { startedAt: string; noiseType: string; durationOrCount: string }[] }>();
+    for (const row of rows) {
+      const key = reportPairKey(kaptCode, row);
+      let group = groups.get(key);
+      if (!group) {
+        const location = [complex?.Name, complex?.Address].find(value => value?.trim())?.trim();
+        group = { applicantName: row.applicantName, applicantPhone: row.applicantPhone,
+          applicantAddress: location ? [location, row.applicantDong && `${row.applicantDong.replace(/동$/, '')}동`,
+            row.applicantHo && `${row.applicantHo.replace(/호$/, '')}호`].filter(Boolean).join(' ') : row.applicantAddress, entries: [] };
+        groups.set(key, group);
+      }
+      group.entries.push({ startedAt: row.startedAt, noiseType: row.noiseType, durationOrCount: row.durationOrCount });
+    }
+    res.set('Cache-Control', 'private, no-store').json({ groups: [...groups.values()] });
+  });
+
   router.post('/export', async (req, res) => {
     const recordNos: unknown = req.body?.recordNos;
-    if (!Array.isArray(recordNos) || recordNos.length === 0 || recordNos.length > 50
-        || recordNos.some(value => typeof value !== 'string' || !recordPattern.test(value))) {
-      res.status(400).json({ error: '출력할 발생일시를 선택해 주세요.' });
+    const reportKey = field(req.body?.reportKey);
+    const incidentLog = req.body?.document === 'incident-log';
+    const groupExport = (!incidentLog || Boolean(reportKey)) && await hasReportSchema();
+    const reportExport = groupExport && !incidentLog;
+    const recordsValid = Array.isArray(recordNos) && recordNos.length > 0 && recordNos.length <= (incidentLog ? 500 : 50)
+      && recordNos.every(value => typeof value === 'string' && recordPattern.test(value));
+    if (incidentLog && reportKey && !groupExport) {
+      res.status(503).json({ message: '층간소음보고서 저장소가 준비되지 않았습니다.' });
       return;
     }
-    const uniqueRecordNos = [...new Set<string>(recordNos)];
+    if (groupExport ? !/^[a-f0-9]{64}$/.test(reportKey) : !recordsValid) {
+      res.status(400).json({ error: incidentLog ? '출력할 발생일지 1~500건을 조회해 주세요.' : '출력할 층간소음보고서를 선택해 주세요.' });
+      return;
+    }
+    const uniqueRecordNos = !groupExport ? [...new Set<string>(recordNos as string[])] : undefined;
+    const kaptCode: string = res.locals.kaptCode;
+    const readExportRows = () => readIncidents(kaptCode, uniqueRecordNos, groupExport ? reportKey : undefined);
     const memberId = Number(res.locals.memberId);
     const now = Date.now();
     if (activeExports >= 2 || now - (lastExportByMember.get(memberId) ?? 0) < 10_000) {
@@ -956,13 +1805,17 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
     activeExports += 1;
     lastExportByMember.set(memberId, now);
     try {
-    let rows = await readIncidents(res.locals.kaptCode, uniqueRecordNos);
-    if (rows.length !== uniqueRecordNos.length || rows.some(row => row.userId !== rows[0].userId)) {
+    let rows = await readExportRows();
+    if (!rows.length || (uniqueRecordNos && rows.length !== uniqueRecordNos.length)) {
+      res.status(409).json({ error: '일부 발생일지가 철회되었거나 조회할 수 없습니다. 목록을 다시 조회해 주세요.' });
+      return;
+    }
+    if (!incidentLog && rows.some(row => row.userId !== rows[0].userId)) {
       res.status(400).json({ error: '같은 신청세대의 발생일시만 선택해 주세요.' });
       return;
     }
     const applicantKey = normalized(`${rows[0].applicantName}|${rows[0].applicantPhone}|${rows[0].applicantAddress}`);
-    if (rows.some(row => normalized(`${row.applicantName}|${row.applicantPhone}|${row.applicantAddress}`) !== applicantKey)) {
+    if (!reportExport && !incidentLog && rows.some(row => normalized(`${row.applicantName}|${row.applicantPhone}|${row.applicantAddress}`) !== applicantKey)) {
       res.status(400).json({ error: '신청세대 정보가 서로 다른 발생일시는 한 문서로 출력할 수 없습니다.' });
       return;
     }
@@ -974,7 +1827,12 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
     for (const row of mustRecheck) {
       await verifyIntegrity(res.locals.kaptCode, row.recordNo, res.locals.memberId, emailFrom);
     }
-    if (mustRecheck.length) rows = await readIncidents(res.locals.kaptCode, uniqueRecordNos);
+    if (mustRecheck.length) rows = await readExportRows();
+    if (!rows.length || (uniqueRecordNos && rows.length !== uniqueRecordNos.length)
+        || (groupExport && rows.some(row => !row.counterpartConfirmed || reportPairKey(kaptCode, row) !== reportKey))) {
+      res.status(409).json({ error: '보고서에 포함된 발생일지 또는 세대 정보가 변경되었습니다.' });
+      return;
+    }
     const blocked = rows.find(row => row.artifactSource !== 'UPLOAD' || row.integrityStatus !== 'VERIFIED'
       || row.submittedAudioSha256 !== row.observedAudioSha256
       || row.submittedAudioSha256 !== row.expectedAudioSha256
@@ -984,17 +1842,12 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       res.status(409).json({ error: `발생일지 ${blocked.recordNo}의 음원 무결성 문제가 해결되지 않아 출력할 수 없습니다.` });
       return;
     }
-    const snapshotParameters: Record<string, unknown> = { kaptCode: res.locals.kaptCode };
-    const snapshotValues = rows.map((row, index) => {
-      snapshotParameters[`snapshotRecord${index}`] = row.recordNo;
-      snapshotParameters[`snapshotArtifact${index}`] = row.artifactId;
-      return `(@snapshotRecord${index},@snapshotArtifact${index})`;
-    }).join(',');
+    const snapshotParameters = { kaptCode, snapshot: JSON.stringify(rows.map(row => [row.recordNo, row.artifactId])) };
     const [snapshot] = await querySql<{ ValidCount: number }>(`
       SET XACT_ABORT ON;
       BEGIN TRANSACTION;
       SELECT COUNT_BIG(*) AS ValidCount
-      FROM (VALUES ${snapshotValues}) selected(RecordNo,ArtifactId)
+      FROM OPENJSON(@snapshot) WITH(RecordNo varchar(13) '$[0]',ArtifactId bigint '$[1]') selected
       JOIN dbo.CommitteeSubmissions s WITH(UPDLOCK,HOLDLOCK)
         ON s.RecordNo=selected.RecordNo AND s.SubmissionArtifactId=selected.ArtifactId
       JOIN dbo.NoiseRecordings r ON r.RecordNo=s.RecordNo AND r.UserId=s.UserId
@@ -1003,7 +1856,7 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       CROSS APPLY(SELECT TOP (1) e.Status,e.ExpectedAudioSha256,e.ObservedAudioSha256,
         e.OriginalObservedAudioSha256,e.SubmittedAudioSha256
         FROM dbo.CommitteeIntegrityEvents e WHERE e.RecordNo=s.RecordNo ORDER BY e.EventId DESC) lastCheck
-      WHERE s.KaptCode=@kaptCode AND s.WithdrawnAt IS NULL AND s.IntegrityStatus='VERIFIED'
+      WHERE s.KaptCode=@kaptCode AND s.WithdrawnAt IS NULL AND s.CommitteeHiddenAt IS NULL AND s.IntegrityStatus='VERIFIED'
         AND a.ArtifactSource='UPLOAD'
         AND s.SubmittedAudioSha256=a.AudioSha256 AND s.ObservedAudioSha256=a.AudioSha256
         AND s.ExpectedAudioSha256=r.AudioSha256
@@ -1023,21 +1876,30 @@ export function committeeDataRouter(jwtSecret: string, emailFrom: string): expre
       FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode AND Role=N'위원장' AND ApprovedAt IS NOT NULL
     `, { kaptCode: res.locals.kaptCode, key: memberDataKey });
     const chairData = chair ? parseJson(chair.MemberJson) : {};
-    const pdf = await createIncidentPdf(rows, { name: clean(chairData.name, 80), email: chair?.Email ?? '' });
-    const finalRows = await readIncidents(res.locals.kaptCode, uniqueRecordNos);
+    const [complex] = await querySql<{ kaptName: string; address: string | null }>(`
+      SELECT TOP (1) kaptName, COALESCE(NULLIF(TRIM(roadAddress),N''),NULLIF(TRIM(address),N''),NULLIF(TRIM(legalAddress),N'')) AS address
+      FROM dbo.AptComplexWithDetail WHERE kaptCode=@kaptCode
+    `, { kaptCode });
+    const pdf = await createIncidentPdf(rows, { name: clean(chairData.name, 80), email: chair?.Email ?? '' },
+      reportExport ? 'report' : incidentLog ? 'incident-log' : 'legacy',
+      { name: clean(complex?.kaptName, 100), address: clean(complex?.address, 300) },
+      row => reportPairKey(kaptCode, row));
+    const finalRows = await readExportRows();
     const finalByRecord = new Map(finalRows.map(row => [row.recordNo, row]));
     if (finalRows.length !== rows.length || rows.some(row => {
       const current = finalByRecord.get(row.recordNo);
       return !current || current.submissionVersion !== row.submissionVersion
         || current.journalVersion !== row.journalVersion || current.artifactId !== row.artifactId
+        || current.counterpartVersion !== row.counterpartVersion
         || current.integrityStatus !== 'VERIFIED';
     })) {
       res.status(409).json({ error: 'PDF 생성 중 발생일지가 변경 또는 철회되어 출력이 중단되었습니다. 목록을 새로 조회해 주세요.' });
       return;
     }
     const kstDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' });
-    const safeName = (rows[0].applicantName || '신청세대').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_');
-    const filename = `${safeName}_${kstDate.format(new Date(rows[0].startedAt))}_${kstDate.format(new Date(rows.at(-1)!.endedAt))}_층간소음발생일지.pdf`;
+    const allSameApplicant = rows.every(row => row.userId === rows[0].userId);
+    const safeName = (allSameApplicant && rows[0].applicantName || '신청세대').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_');
+    const filename = `${safeName}_${kstDate.format(new Date(rows[0].startedAt))}_${kstDate.format(new Date(rows.at(-1)!.endedAt))}_${reportExport ? '층간소음보고서' : '층간소음발생일지'}.pdf`;
     const disposition = req.body?.download === true ? 'attachment' : 'inline';
     const encoded = encodeURIComponent(filename).replace(/['()*]/g, value => `%${value.charCodeAt(0).toString(16)}`);
     res.type('application/pdf').set('Content-Disposition', `${disposition}; filename*=UTF-8''${encoded}`).send(pdf);

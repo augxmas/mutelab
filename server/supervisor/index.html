@@ -6,96 +6,130 @@
   <meta name="color-scheme" content="light">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>MuteLab 위원회 승인 관리</title>
-  <link rel="stylesheet" href="/supervisor/styles.css?v=20261125-supervisor-1">
+  <link rel="icon" type="image/png" href="/supervisor/favicon.png">
+  <link rel="stylesheet" href="/supervisor/styles.css?v=supervisor-notifications-1">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/supervisor/" aria-label="MuteLab 위원회 승인 관리 홈"><span aria-hidden="true">M</span><strong>MuteLab</strong></a>
-    <div class="topbar-copy"><span>Supervisor</span><strong>위원회 승인 관리</strong></div>
-    <button id="refreshButton" class="button secondary compact" type="button">새로고침</button>
+    <div id="sessionActions" class="session-actions" hidden>
+      <span class="topbar-copy">위원회 승인 관리</span>
+      <button id="supervisorNotificationsButton" class="button secondary compact notification-button" type="button" aria-label="알림" aria-haspopup="dialog">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+        <span id="supervisorNotificationCount" class="notification-badge" aria-hidden="true" hidden></span>
+      </button>
+      <button id="refreshButton" class="button secondary compact" type="button">새로고침</button>
+      <button id="logoutButton" class="button secondary compact" type="button">로그아웃</button>
+    </div>
   </header>
 
-  <main class="workspace">
-    <section class="page-heading" aria-labelledby="pageTitle">
-      <div>
-        <p class="eyebrow">APARTMENT COMMITTEE REVIEW</p>
-        <h1 id="pageTitle">전체 단지와 위원회 가입 현황</h1>
-        <p>등록된 단지를 조회하고 위원회 신청자 정보를 검토한 뒤 승인 또는 반려할 수 있습니다.</p>
-      </div>
-      <div class="privacy-notice"><strong>업무용 개인정보</strong><span>이 화면의 신청자 정보와 서류를 승인 업무 외 목적으로 이용하지 마세요.</span></div>
+  <main id="supervisorAuth" class="auth-shell">
+    <section class="auth-brand" aria-labelledby="authBrandTitle">
+      <div class="brand-mark" aria-hidden="true">M</div>
+      <h1 id="authBrandTitle">위원회 가입 승인 관리</h1>
+      <p>단지별 위원회 가입 신청과 증빙서류를 확인하고 승인 또는 반려합니다.</p>
     </section>
-
-    <p id="pageMessage" class="message" role="status" aria-live="polite"></p>
-
-    <section class="summary-grid" aria-label="단지 현황 요약">
-      <article class="summary-card"><span>전체 단지</span><strong id="summaryTotal">-</strong></article>
-      <article class="summary-card"><span>가입 정보 있음</span><strong id="summaryRegistered">-</strong></article>
-      <article class="summary-card pending"><span>승인 대기</span><strong id="summaryPending">-</strong></article>
-      <article class="summary-card quiet"><span>미가입</span><strong id="summaryUnregistered">-</strong></article>
-    </section>
-
-    <section class="filter-card" aria-labelledby="filterTitle">
-      <div>
-        <p class="eyebrow" id="filterTitle">조회 조건</p>
-        <h2>단지 검색</h2>
+    <section class="auth-panel" aria-labelledby="authTitle">
+      <div class="supervisor-auth">
+        <h2 id="authTitle">감독자 로그인</h2>
+        <p id="authMessage" class="message" role="alert"></p>
+        <form id="supervisorLogin">
+          <label>이메일<input name="email" type="email" autocomplete="username" required autofocus></label>
+          <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+          <label id="loginOtp" hidden>Google OTP<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" disabled></label>
+          <button class="button primary" type="submit">로그인</button>
+        </form>
+        <form id="supervisorEnrollment" hidden>
+          <p>Google OTP 앱에서 <strong>QR 코드 스캔</strong>을 선택하세요.</p>
+          <img id="otpQrCode" class="otp-qr-code" width="260" height="260" alt="Google OTP 계정 등록 QR 코드" hidden>
+          <details id="otpManualSetup">
+            <summary>설정 키 직접 입력</summary>
+            <p>계정 이름은 로그인 이메일로 입력하고 시간 기준을 선택하세요.</p>
+            <label>설정 키<input id="otpSetupKey" type="text" readonly></label>
+          </details>
+          <label>Google OTP 인증코드<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+          <label>새 비밀번호<input name="newPassword" type="password" autocomplete="new-password" minlength="10" required></label>
+          <label>새 비밀번호 확인<input name="confirmPassword" type="password" autocomplete="new-password" minlength="10" required></label>
+          <button class="button primary" type="submit">설정 완료</button>
+          <button id="cancelEnrollment" class="button secondary" type="button">로그인으로 돌아가기</button>
+        </form>
       </div>
-      <form id="filterForm" class="filters">
-        <label class="grow">단지명·단지코드·주소
-          <input id="queryInput" name="query" type="search" maxlength="100" placeholder="예: 청암자이, A14005001, 용산구">
-        </label>
-        <label>위원회 상태
-          <select id="statusSelect" name="status">
-            <option value="ALL">전체</option>
-            <option value="UNREGISTERED">미가입</option>
-            <option value="PENDING">승인 대기</option>
-            <option value="APPROVED">가입 승인</option>
-            <option value="REJECTED">반려</option>
-          </select>
-        </label>
-        <label>페이지당
-          <select id="pageSizeSelect" name="pageSize">
-            <option value="25">25건</option>
-            <option value="50" selected>50건</option>
-            <option value="100">100건</option>
-          </select>
-        </label>
-        <button class="button primary" type="submit">조회</button>
-      </form>
-    </section>
-
-    <section class="table-card" aria-labelledby="resultTitle">
-      <div class="table-head">
-        <div><p class="eyebrow">COMPLEXES</p><h2 id="resultTitle">단지별 위원회 현황</h2></div>
-        <p id="resultMeta" class="muted" aria-live="polite"></p>
-      </div>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">상태</th>
-              <th scope="col">단지명 / 코드</th>
-              <th scope="col">기본주소</th>
-              <th scope="col">승인 대기</th>
-              <th scope="col">승인 위원</th>
-              <th scope="col">최초 신청</th>
-              <th scope="col">상세</th>
-            </tr>
-          </thead>
-          <tbody id="complexRows"></tbody>
-        </table>
-      </div>
-      <div id="emptyState" class="empty-state" hidden><strong>조회된 단지가 없습니다.</strong><span>검색어나 상태 조건을 변경해 주세요.</span></div>
-      <nav class="pagination" aria-label="단지 목록 페이지">
-        <button id="previousPage" class="button secondary compact" type="button">이전</button>
-        <span id="pageIndicator">1 / 1</span>
-        <button id="nextPage" class="button secondary compact" type="button">다음</button>
-      </nav>
     </section>
   </main>
 
+  <main id="supervisorWorkspace" class="workspace" hidden>
+    <div class="supervisor-tabs" role="tablist" aria-label="감독자 메뉴">
+      <button id="complexTab" class="supervisor-tab" type="button" role="tab" aria-selected="true" aria-controls="complexPanel">단지현황</button>
+      <button id="supervisorInquiriesTab" class="supervisor-tab" type="button" role="tab" aria-selected="false" aria-controls="supervisorInquiriesPanel" tabindex="-1">문의 답변</button>
+    </div>
+    <div id="complexPanel" role="tabpanel" aria-labelledby="complexTab">
+      <section class="table-card" aria-label="단지현황">
+        <form id="filterForm" class="filters" aria-label="단지 검색">
+          <label class="grow">단지명·단지코드·주소
+            <input id="queryInput" name="query" type="search" maxlength="100" placeholder="예: 청암자이, A14005001, 용산구">
+          </label>
+          <label>위원회 상태
+            <select id="statusSelect" name="status">
+              <option value="ALL">전체</option>
+              <option value="UNREGISTERED">미가입</option>
+              <option value="PENDING">승인 대기</option>
+              <option value="APPROVED">가입 승인</option>
+              <option value="REJECTED">반려</option>
+            </select>
+          </label>
+          <label>페이지당
+            <select id="pageSizeSelect" name="pageSize">
+              <option value="25">25건</option>
+              <option value="50" selected>50건</option>
+              <option value="100">100건</option>
+            </select>
+          </label>
+          <button class="button primary" type="submit">조회</button>
+        </form>
+        <p class="privacy-notice">신청자 정보와 서류는 승인 업무 범위에서만 확인해 주세요.</p>
+        <dl class="summary-grid" aria-label="단지 현황 요약">
+          <div><dt>가입 정보 있음</dt><dd id="summaryRegistered">-</dd></div>
+          <div class="pending"><dt>승인 대기</dt><dd id="summaryPending">-</dd></div>
+          <div><dt>미가입</dt><dd id="summaryUnregistered">-</dd></div>
+        </dl>
+        <p id="pageMessage" class="message" role="status" aria-live="polite"></p>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="단지 조회 결과">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">상태</th>
+                <th scope="col">단지명 / 코드</th>
+                <th scope="col">기본주소</th>
+                <th scope="col">승인 대기</th>
+                <th scope="col">승인 위원</th>
+                <th scope="col">최초 신청</th>
+                <th scope="col">사업자등록증</th>
+                <th scope="col">상세</th>
+              </tr>
+            </thead>
+            <tbody id="complexRows"></tbody>
+          </table>
+        </div>
+        <div id="emptyState" class="empty-state" hidden><strong>조회된 단지가 없습니다.</strong><span>검색어나 상태 조건을 변경해 주세요.</span></div>
+        <nav id="complexPagination" class="pagination" aria-label="단지 목록 페이지" hidden></nav>
+      </section>
+    </div>
+    <section id="supervisorInquiriesPanel" class="table-card supervisor-inquiries" role="tabpanel" aria-labelledby="supervisorInquiriesTab" hidden>
+      <p id="supervisorInquiryMessage" class="message" role="status" hidden></p>
+      <div id="supervisorInquiryList"></div>
+    </section>
+  </main>
+
+  <footer class="supervisor-footer">
+    <strong>(주)모노라마</strong>
+    <span>대표이사 김창호</span>
+    <span>사업자등록번호 : 277-86-00185</span>
+    <address>주소 : 서울시 강서구 마곡중앙6로 45, 에이동 6층 601-A25호(마곡동,리더스퀘어마곡)</address>
+  </footer>
+
   <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailTitle">
     <header class="dialog-header">
-      <div><p class="eyebrow">COMMITTEE DETAIL</p><h2 id="detailTitle">단지 위원회 상세</h2><p id="detailAddress" class="muted"></p></div>
+      <div><h2 id="detailTitle">단지 위원회 상세</h2><p id="detailAddress" class="muted"></p></div>
       <button id="closeDetailTop" class="icon-button" type="button" aria-label="상세 닫기">×</button>
     </header>
     <div id="detailBody" class="dialog-body">
@@ -106,38 +140,94 @@
         <div><span>승인 대기</span><strong id="detailPendingCount">-</strong></div>
       </section>
 
-      <section class="detail-section" aria-labelledby="memberTitle">
-        <div class="section-heading"><div><p class="eyebrow">MEMBERS</p><h3 id="memberTitle">승인된 위원</h3></div><span id="memberCount" class="count-pill">0명</span></div>
-        <div id="memberList" class="person-list"></div>
-        <p id="memberEmpty" class="inline-empty">승인된 위원이 없습니다.</p>
-      </section>
+      <div id="detailSeatTabs" class="detail-seat-tabs" role="tablist" aria-label="위원회 자리" hidden>
+        <button id="detailChairTab" class="supervisor-tab" type="button" role="tab" aria-selected="true" aria-controls="detailSeatPanel">위원장 <span></span></button>
+        <button id="detailMember1Tab" class="supervisor-tab" type="button" role="tab" aria-selected="false" aria-controls="detailSeatPanel" tabindex="-1">위원 1 <span></span></button>
+        <button id="detailMember2Tab" class="supervisor-tab" type="button" role="tab" aria-selected="false" aria-controls="detailSeatPanel" tabindex="-1">위원 2 <span></span></button>
+        <button id="detailRejectedTab" class="supervisor-tab" type="button" role="tab" aria-selected="false" aria-controls="detailSeatPanel" tabindex="-1" hidden>반려 이력 <span></span></button>
+      </div>
+      <div id="detailSeatPanel" role="tabpanel" aria-labelledby="detailChairTab" hidden>
+        <section id="detailMemberSection" class="detail-section" aria-labelledby="memberTitle" hidden>
+          <h3 id="memberTitle">승인된 위원</h3>
+          <div id="memberList" class="person-list"></div>
+        </section>
+        <section id="detailApplicationSection" class="detail-section" aria-labelledby="applicationTitle" hidden>
+          <h3 id="applicationTitle">위원 가입 신청</h3>
+          <div id="applicationList" class="application-list"></div>
+        </section>
+        <p id="detailSeatEmpty" class="inline-empty" hidden>이 자리에 승인된 위원 또는 승인 대기 신청이 없습니다.</p>
+      </div>
 
-      <section class="detail-section" aria-labelledby="applicationTitle">
-        <div class="section-heading"><div><p class="eyebrow">APPLICATIONS</p><h3 id="applicationTitle">위원 가입 신청</h3></div><span id="applicationCount" class="count-pill">0건</span></div>
-        <p class="section-guide">승인하려면 승인 대기 신청자의 사업자등록증을 모두 열어 확인해야 합니다.</p>
-        <div id="applicationList" class="application-list"></div>
-        <p id="applicationEmpty" class="inline-empty">가입 신청 내역이 없습니다.</p>
-      </section>
+      <form id="businessRegistrationForm" class="business-registration-form" hidden>
+        <label>사업자등록번호
+          <input id="businessRegistrationInput" name="businessRegistrationNumber" type="text" inputmode="numeric"
+            autocomplete="off" pattern="[0-9]{10}|[0-9]{3}-[0-9]{2}-[0-9]{5}" required>
+        </label>
+        <button id="saveBusinessRegistration" class="button secondary compact" type="submit">저장</button>
+      </form>
 
       <section id="decisionPanel" class="decision-panel" aria-labelledby="decisionTitle">
-        <div><p class="eyebrow">DECISION</p><h3 id="decisionTitle">대기 신청 전체 결정</h3></div>
+        <h3 id="decisionTitle">대기 신청 전체 결정</h3>
         <p id="approvalGate" class="review-gate" role="status"></p>
-        <label for="decisionReason">검토 메모 / 반려 사유
-          <textarea id="decisionReason" maxlength="1000" rows="4" placeholder="반려할 때에는 사유를 반드시 입력해 주세요."></textarea>
-        </label>
-        <div class="character-count"><span id="reasonCount">0</span> / 1000</div>
+        <details id="decisionNote">
+          <summary>검토 메모 / 반려 사유</summary>
+          <textarea id="decisionReason" aria-label="검토 메모 또는 반려 사유" maxlength="1000" rows="2" placeholder="반려할 때에는 사유를 입력해 주세요."></textarea>
+          <div class="character-count"><span id="reasonCount">0</span> / 1000</div>
+        </details>
       </section>
     </div>
     <footer class="dialog-footer">
       <p id="detailMessage" class="message" role="status" aria-live="polite"></p>
       <div class="dialog-actions">
         <button id="closeDetailBottom" class="button secondary" type="button">닫기</button>
-        <button id="rejectButton" class="button danger" type="button">대기 신청 반려</button>
-        <button id="approveButton" class="button primary" type="button">대기 신청 승인</button>
+        <button id="rejectButton" class="button danger" type="button">반려</button>
+        <button id="approveButton" class="button primary" type="button">승인</button>
       </div>
     </footer>
   </dialog>
 
-  <script src="/supervisor/app.js?v=20261125-supervisor-1" defer></script>
+  <dialog id="documentDialog" class="detail-dialog document-dialog" aria-labelledby="documentTitle">
+    <header class="dialog-header">
+      <h2 id="documentTitle">사업자등록증</h2>
+      <form method="dialog"><button class="icon-button" type="submit" aria-label="사업자등록증 닫기" autofocus>×</button></form>
+    </header>
+    <div class="dialog-body document-preview">
+      <p id="documentMessage" class="message" role="status" aria-live="polite"></p>
+      <img id="documentImage" alt="사업자등록증 이미지" hidden>
+      <iframe id="documentPdf" title="사업자등록증 PDF" hidden></iframe>
+    </div>
+    <form method="dialog" class="dialog-footer document-footer">
+      <a id="documentPdfDownload" class="button secondary compact" download="사업자등록증.pdf" hidden>PDF 다운로드</a>
+      <button class="button secondary compact" type="submit">닫기</button>
+    </form>
+  </dialog>
+
+  <dialog id="decisionConfirmation" class="decision-confirmation" aria-labelledby="decisionConfirmationTitle" aria-describedby="decisionConfirmationMessage">
+    <form method="dialog">
+      <h2 id="decisionConfirmationTitle"></h2>
+      <p id="decisionConfirmationMessage"></p>
+      <div id="decisionConfirmationReason" class="decision-confirmation-reason" hidden>
+        <strong>반려 사유</strong>
+        <p></p>
+      </div>
+      <div class="dialog-actions">
+        <button class="button secondary" type="submit" value="cancel" autofocus>취소</button>
+        <button id="confirmDecision" class="button primary" type="submit" value="confirm"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="supervisorNotifications" class="decision-confirmation notification-dialog" aria-labelledby="supervisorNotificationsTitle">
+    <h2 id="supervisorNotificationsTitle">알림</h2>
+    <p id="supervisorNotificationStatus" role="status"></p>
+    <ul id="supervisorNotificationItems" class="notification-items"></ul>
+    <div id="supervisorNotificationPages" class="notification-pages" hidden>
+      <button id="supervisorNotificationPrev" class="button secondary compact" type="button">이전</button>
+      <span id="supervisorNotificationPage"></span>
+      <button id="supervisorNotificationNext" class="button secondary compact" type="button">다음</button>
+    </div>
+    <form method="dialog" class="dialog-actions"><button class="button secondary compact" autofocus>닫기</button></form>
+  </dialog>
+  <script src="/supervisor/app.js?v=supervisor-notifications-1" defer></script>
 </body>
 </html>

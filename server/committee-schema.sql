@@ -52,13 +52,15 @@ BEGIN
     ApprovedMemberId int NULL CONSTRAINT FK_CommitteeApplications_Member REFERENCES dbo.CommitteeMembers(MemberId),
     Reviewer nvarchar(128) NULL,
     ReviewedDocumentSha256 char(64) NULL,
-    ReviewNote nvarchar(1000) NULL,
+    ReviewNoteCipher varbinary(max) NULL,
     ReviewedAt datetime2(0) NULL,
     SubmittedAt datetime2(0) NOT NULL CONSTRAINT DF_CommitteeApplications_SubmittedAt DEFAULT SYSUTCDATETIME());
 END;
 
 IF COL_LENGTH(N'dbo.CommitteeApplications',N'Reviewer')<256
   ALTER TABLE dbo.CommitteeApplications ALTER COLUMN Reviewer nvarchar(128) NULL;
+IF COL_LENGTH(N'dbo.CommitteeApplications',N'ReviewNoteCipher') IS NULL
+  ALTER TABLE dbo.CommitteeApplications ADD ReviewNoteCipher varbinary(max) NULL;
 
 IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.CommitteeApplications') AND name=N'UX_CommitteeApplications_PendingLogin')
   CREATE UNIQUE INDEX UX_CommitteeApplications_PendingLogin ON dbo.CommitteeApplications(LoginHash) WHERE Status='PENDING';
@@ -360,22 +362,24 @@ ALTER TABLE dbo.CommitteeIntegrityEvents ALTER COLUMN OriginalObservedAudioSha25
 
 EXEC(N'CREATE OR ALTER PROCEDURE dbo.GetCommitteeApplicationForReview
   @ApplicationId bigint,
-  @MemberDataKey nvarchar(128)
+  @MemberDataKey nvarchar(128),
+  @IncludeReviewed bit=0
 AS
 BEGIN
   SET NOCOUNT ON;
-  SELECT ApplicationId,KaptCode,RequestedRole,
+  SELECT ApplicationId,KaptCode,RequestedRole,Status,
     dbo.DecryptMemberData(EmailCipher,@MemberDataKey) AS Email,
     dbo.DecryptMemberData(MemberCipher,@MemberDataKey) AS MemberJson,DocumentCipher,
     DocumentSha256,ConsentedAt,SubmittedAt
   FROM dbo.CommitteeApplications
-  WHERE ApplicationId=@ApplicationId AND Status=''PENDING'';
+  WHERE ApplicationId=@ApplicationId AND (Status=''PENDING'' OR @IncludeReviewed=1);
 END;');
 
 EXEC(N'CREATE OR ALTER PROCEDURE dbo.ApproveCommitteeApplication
   @ApplicationId bigint,
   @ReviewedDocumentSha256 char(64),
-  @ReviewNote nvarchar(1000)=NULL
+  @ReviewNote nvarchar(1000)=NULL,
+  @MemberDataKey nvarchar(128)
 AS
 BEGIN
   SET NOCOUNT ON;
@@ -411,6 +415,7 @@ BEGIN
   WHERE NOT EXISTS(SELECT 1 FROM dbo.CommitteeMembers WHERE KaptCode=@kaptCode AND Seat=v.seat)
   ORDER BY v.seat;
   IF @seat IS NULL THROW 51069,''Committee is full.'',1;
+  UPDATE dbo.CommitteeApplications SET Status=''APPROVED'' WHERE ApplicationId=@ApplicationId;
   INSERT dbo.CommitteeMembers(KaptCode,Seat,Role,LoginHash,EmailHash,MobileHash,EmailCipher,
     MemberCipher,DocumentCipher,PasswordHash,ApprovedAt,ConsentedAt)
   VALUES(@kaptCode,@seat,@role,@loginHash,@emailHash,@mobileHash,@emailCipher,
@@ -418,16 +423,42 @@ BEGIN
   SET @memberId=CONVERT(int,SCOPE_IDENTITY());
   UPDATE dbo.CommitteeApplications SET Status=''APPROVED'',ApprovedMemberId=@memberId,
     Reviewer=@reviewerLogin,ReviewedDocumentSha256=@ReviewedDocumentSha256,
-    ReviewNote=NULLIF(LTRIM(RTRIM(@ReviewNote)),N''''),ReviewedAt=SYSUTCDATETIME()
+    ReviewNoteCipher=dbo.EncryptMemberData(NULLIF(LTRIM(RTRIM(@ReviewNote)),N''''),@MemberDataKey),ReviewedAt=SYSUTCDATETIME()
   WHERE ApplicationId=@ApplicationId;
   COMMIT TRANSACTION;
   SELECT @ApplicationId AS ApplicationId,@memberId AS MemberId,@kaptCode AS KaptCode,@seat AS Seat,
     @role AS Role,@reviewerLogin AS Reviewer;
 END;');
 
+EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_CommitteeApplications_ExclusiveEmail
+ON dbo.CommitteeApplications AFTER INSERT, UPDATE AS
+BEGIN
+  SET NOCOUNT ON;
+  IF NOT UPDATE(EmailHash) AND NOT UPDATE(Status) RETURN;
+  IF NOT EXISTS(SELECT 1 FROM inserted WHERE Status=''PENDING'') RETURN;
+  DECLARE @lock int;
+  EXEC @lock=sys.sp_getapplock @Resource=N''MuteLab.Committee.Identity'',@LockMode=''Exclusive'',@LockOwner=''Transaction'',@LockTimeout=5000;
+  IF @lock<0 THROW 51020,''Committee identity lock failed.'',1;
+  IF EXISTS(SELECT 1 FROM inserted i JOIN dbo.CommitteeMembers m ON m.EmailHash=i.EmailHash WHERE i.Status=''PENDING'')
+    THROW 51114,''Committee email already reserved.'',1;
+END;');
+
+EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_CommitteeMembers_ExclusiveEmail
+ON dbo.CommitteeMembers AFTER INSERT, UPDATE AS
+BEGIN
+  SET NOCOUNT ON;
+  IF NOT UPDATE(EmailHash) OR NOT EXISTS(SELECT 1 FROM inserted) RETURN;
+  DECLARE @lock int;
+  EXEC @lock=sys.sp_getapplock @Resource=N''MuteLab.Committee.Identity'',@LockMode=''Exclusive'',@LockOwner=''Transaction'',@LockTimeout=5000;
+  IF @lock<0 THROW 51020,''Committee identity lock failed.'',1;
+  IF EXISTS(SELECT 1 FROM inserted i JOIN dbo.CommitteeApplications a ON a.EmailHash=i.EmailHash WHERE a.Status=''PENDING'')
+    THROW 51114,''Committee email already reserved.'',1;
+END;');
+
 EXEC(N'CREATE OR ALTER PROCEDURE dbo.RejectCommitteeApplication
   @ApplicationId bigint,
-  @ReviewNote nvarchar(1000)
+  @ReviewNote nvarchar(1000),
+  @MemberDataKey nvarchar(128)
 AS
 BEGIN
   SET NOCOUNT ON;
@@ -441,7 +472,7 @@ BEGIN
   EXEC @lock=sp_getapplock @Resource=N''MuteLab.Committee.Identity'',@LockMode=''Exclusive'',@LockOwner=''Transaction'';
   IF @lock<0 THROW 51060,''Committee identity lock failed.'',1;
   UPDATE dbo.CommitteeApplications WITH(UPDLOCK,HOLDLOCK)
-  SET Status=''REJECTED'',Reviewer=@reviewerLogin,ReviewNote=LTRIM(RTRIM(@ReviewNote)),
+  SET Status=''REJECTED'',Reviewer=@reviewerLogin,ReviewNoteCipher=dbo.EncryptMemberData(LTRIM(RTRIM(@ReviewNote)),@MemberDataKey),
     ReviewedAt=SYSUTCDATETIME(),ReviewedDocumentSha256=NULL
   WHERE ApplicationId=@ApplicationId AND Status=''PENDING'';
   IF @@ROWCOUNT<>1 THROW 51061,''Pending committee application not found.'',1;
@@ -454,11 +485,7 @@ EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_CommitteeSubmissionArtifacts_InsertOnly
 ON dbo.CommitteeSubmissionArtifacts INSTEAD OF UPDATE, DELETE AS
 BEGIN
   SET NOCOUNT ON;
-  IF EXISTS(SELECT 1 FROM inserted)
-    THROW 51053, ''Committee submission audio artifacts are insert-only.'', 1;
-  IF EXISTS(SELECT 1 FROM deleted d JOIN dbo.CommitteeSubmissionArtifactBindings b ON b.ArtifactId=d.ArtifactId)
-    THROW 51053, ''Bound committee submission audio artifacts are immutable.'', 1;
-  DELETE a FROM dbo.CommitteeSubmissionArtifacts a JOIN deleted d ON d.ArtifactId=a.ArtifactId;
+  THROW 51053, ''Committee submission audio artifacts are insert-only.'', 1;
 END;');
 
 EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_CommitteeSubmissionArtifacts_ValidateInsert
@@ -470,6 +497,10 @@ BEGIN
       OR AudioSha256<>CONVERT(char(64),HASHBYTES(''SHA2_256'',AudioData),2))
     THROW 51058,''Committee submission audio hash or length is invalid.'',1;
 END;');
+
+EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_CommitteeSubmissionArtifactBindings_InsertOnly
+ON dbo.CommitteeSubmissionArtifactBindings INSTEAD OF UPDATE, DELETE AS
+BEGIN SET NOCOUNT ON; THROW 51053, ''Committee evidence bindings are insert-only.'',1; END;');
 
 EXEC(N'CREATE OR ALTER TRIGGER dbo.TR_NoiseRecordings_ValidateInsert
 ON dbo.NoiseRecordings AFTER INSERT AS
@@ -525,7 +556,7 @@ BEGIN
     MemberCipher,PasswordHash,ApprovedAt,ConsentedAt,CreatedAt) ON OBJECT::dbo.CommitteeMembers TO MuteLabApiRole;
   REVOKE UPDATE,DELETE ON OBJECT::dbo.CommitteeApplications FROM MuteLabApiRole;
   GRANT INSERT ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
-  GRANT SELECT (ApplicationId,KaptCode,RequestedRole,LoginHash,EmailHash,MobileHash,PasswordHash,Status,ReviewNote)
+  GRANT SELECT (ApplicationId,KaptCode,RequestedRole,LoginHash,EmailHash,MobileHash,PasswordHash,Status,ReviewNoteCipher)
     ON OBJECT::dbo.CommitteeApplications TO MuteLabApiRole;
   DENY EXECUTE ON OBJECT::dbo.GetCommitteeApplicationForReview TO MuteLabApiRole;
   DENY EXECUTE ON OBJECT::dbo.ApproveCommitteeApplication TO MuteLabApiRole;
@@ -534,7 +565,10 @@ BEGIN
   REVOKE DELETE ON OBJECT::dbo.CommitteeSubmissions FROM MuteLabApiRole;
   GRANT SELECT,INSERT,UPDATE ON OBJECT::dbo.CommitteeSubmissions TO MuteLabApiRole;
   REVOKE UPDATE ON OBJECT::dbo.CommitteeSubmissionArtifacts FROM MuteLabApiRole;
-  GRANT SELECT,INSERT,DELETE ON OBJECT::dbo.CommitteeSubmissionArtifacts TO MuteLabApiRole;
+  GRANT SELECT,INSERT ON OBJECT::dbo.CommitteeSubmissionArtifacts TO MuteLabApiRole;
+  DENY UPDATE,DELETE ON OBJECT::dbo.CommitteeSubmissionArtifacts TO MuteLabApiRole;
+  DENY UPDATE,DELETE ON OBJECT::dbo.CommitteeSubmissionArtifactBindings TO MuteLabApiRole;
+  DENY UPDATE,DELETE ON OBJECT::dbo.NoiseRecordings TO MuteLabApiRole;
   GRANT SELECT,INSERT ON OBJECT::dbo.CommitteeSubmissionArtifactBindings TO MuteLabApiRole;
   GRANT SELECT,INSERT,UPDATE ON OBJECT::dbo.CommitteeCounterpartOverrides TO MuteLabApiRole;
   GRANT SELECT,INSERT ON OBJECT::dbo.CommitteeCounterpartHistory TO MuteLabApiRole;
